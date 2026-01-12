@@ -5,7 +5,7 @@
  *
  * Changes vs. original version:
  *  - Uses pthreads + mutex (no OpenMP for sockets)
- *  - Uses fixed-size WireMessage for UDP communication
+ *  - Uses fixed-size WireMessage for TCP communication
  *  - Adds Cut-in simulation: temporarily pause heartbeat to emulate partition
  *  - Safe mode when connection is lost; optional reconnect
  */
@@ -44,7 +44,6 @@ private:
     int id_;
     int selfIndex_{-1};
     std::string leaderIp_;
-    sockaddr_in leaderAddr_{};
 
     double position_;
     double speed_;
@@ -65,7 +64,7 @@ private:
     std::atomic<bool> cutInActive_;
 
     // Logical clock
-    std::int32_t clock_[MAX_NODES][MAX_NODES]{};
+    std::int32_t clock_[MAX_VEHICLES][MAX_VEHICLES]{};
 
     // Concurrency
     pthread_mutex_t stateMutex_;
@@ -84,16 +83,15 @@ private:
 
     // Helpers
     void initClock();
-    void mergeClockElementwiseMax(const std::int32_t other[MAX_NODES][MAX_NODES]);
-    void onClockReceive(int senderIdx, const std::int32_t other[MAX_NODES][MAX_NODES]);
+    void mergeClockElementwiseMax(const std::int32_t other[MAX_VEHICLES][MAX_VEHICLES]);
+    void onClockReceive(int senderIdx, const std::int32_t other[MAX_VEHICLES][MAX_VEHICLES]);
     void onClockLocalEvent();
-    void printClock();
-    void printDashboard(double leaderPos, double leaderSpeed, bool degraded);
+    void printClock(int numVehicles);
 
     void updateControl(double leaderPos, double leaderSpeed, bool leaderObstacle, bool degraded);
 
-    bool sendMsgToLeader(const void* data, size_t len);
-    bool recvMsgFromLeader(void* data, size_t len, sockaddr_in* from);
+    bool sendAll(int fd, const void* data, size_t len);
+    bool recvAll(int fd, void* data, size_t len);
 
     static std::int64_t nowMs();
     bool tryReconnect();

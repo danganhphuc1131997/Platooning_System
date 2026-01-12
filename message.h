@@ -1,7 +1,7 @@
 // message.h - shared wire protocol for leader/follower communication
 //
 // Goals:
-//  - Safe over UDP: fixed-size POD struct (no std::vector)
+//  - Safe over TCP: fixed-size POD struct (no std::vector)
 //  - Implements a logical matrix clock pattern (fixed MAX_NODES)
 //  - Supports: join, leave, leader state, follower state (heartbeat), and degraded mode.
 
@@ -11,8 +11,9 @@
 #include <cstdint>
 
 // Adjust if you want to support more nodes in the same platoon.
-// Leader uses index 0. Followers are assigned indices 1..MAX_NODES-1 on join.
-static constexpr int MAX_NODES = 6;
+// Leader uses index 0. Followers are assigned indices 1..MAX_VEHICLES-1 on join.
+const int MAX_VEHICLES = 10;
+const int MAX_NODES = MAX_VEHICLES;
 
 enum class MsgType : std::uint8_t {
     JOIN = 1,
@@ -38,7 +39,10 @@ struct WireMessage {
     double        speed;
     std::uint8_t  obstacle;      // 0/1
     std::uint8_t  flags;         // FLAG_* bitfield
-    std::int32_t  clock[MAX_NODES][MAX_NODES];
+    std::int32_t  clockMatrix[MAX_VEHICLES][MAX_VEHICLES];
+    std::int32_t vehicleIds[MAX_VEHICLES];
+    std::int32_t vehicleIndices[MAX_VEHICLES];
+    std::int32_t numVehicles;
 };
 #pragma pack(pop)
 

@@ -3,24 +3,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
-#include <iomanip>
 #include <iostream>
-#include <sstream>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <termios.h>
 #include <thread>
 #include <unistd.h>
-
-// ANSI color codes for terminal output
-#define RESET   "\033[0m"
-#define BOLD    "\033[1m"
-#define RED     "\033[31m"
-#define GREEN   "\033[32m"
-#define YELLOW  "\033[33m"
-#define BLUE    "\033[34m"
-#define CYAN    "\033[36m"
-#define CLEAR   "\033[2J\033[H"
 
 #ifdef USE_OPENCL
 #include <CL/cl.h>
@@ -29,8 +17,7 @@
 
 namespace {
 constexpr std::int64_t HEARTBEAT_PERIOD_MS = 500;
-constexpr std::int64_t RECV_TIMEOUT_MS     = 5000; // for logging (UDP non-blocking)
-constexpr int DISPLAY_UPDATE_INTERVAL = 3; // update dashboard every N receives
+constexpr std::int64_t RECV_TIMEOUT_MS     = 5000; // for logging (TCP will block)
 
 #ifdef USE_OPENCL
 // Very small GPU demo (OpenCL):
@@ -245,87 +232,38 @@ void FollowingVehicle::onClockLocalEvent() {
     clock_[selfIdx][selfIdx] += 1;
 }
 
-void FollowingVehicle::printClock() {
-    // Compact clock display - only show our row
-    std::cout << CYAN << "Clock[" << selfIndex_ << "]: [";
-    for (int j = 0; j < MAX_NODES; ++j) {
-        std::cout << clock_[selfIndex_][j] << (j + 1 == MAX_NODES ? "" : ",");
+void FollowingVehicle::printClock(int numVehicles) {
+    std::cout << "Clock Matrix (" << numVehicles << " vehicles):" << std::endl;
+    for (int i = 0; i < numVehicles; ++i) {
+        for (int j = 0; j < numVehicles; ++j) {
+            std::cout << clock_[i][j] << (j + 1 == numVehicles ? "" : " ");
+        }
+        std::cout << std::endl;
     }
-    std::cout << "]" << RESET << std::endl;
-}
-
-void FollowingVehicle::printDashboard(double leaderPos, double leaderSpeed, bool degraded) {
-    std::cout << CLEAR;  // Clear screen
-    std::cout << BOLD << "╔════════════════════════════════════════════════════════╗" << RESET << std::endl;
-    std::cout << BOLD << "║" << BLUE << "          🚙 FOLLOWER VEHICLE #" << id_ << " DASHBOARD            " << RESET << BOLD << "║" << RESET << std::endl;
-    std::cout << BOLD << "╠════════════════════════════════════════════════════════╣" << RESET << std::endl;
-    
-    // Status
-    std::ostringstream status;
-    if (obstacleDetected_.load()) {
-        status << RED << "⛔ OBSTACLE DETECTED" << RESET;
-    } else if (cutInActive_.load()) {
-        status << YELLOW << "⚠️  CUT-IN SIMULATION (no heartbeat)" << RESET;
-    } else if (!connected_.load()) {
-        status << RED << "✗ DISCONNECTED" << RESET;
-    } else if (degraded) {
-        status << YELLOW << "⚠️  LEADER IN DEGRADED MODE" << RESET;
-    } else {
-        status << GREEN << "✓ FOLLOWING" << RESET;
-    }
-    std::cout << BOLD << "║" << RESET << " Status: " << std::left << std::setw(45) << status.str() << BOLD << "║" << RESET << std::endl;
-    
-    // My Position & Speed
-    std::cout << BOLD << "║" << RESET << " My Position: " << CYAN << std::fixed << std::setprecision(1) << std::setw(8) << position_ << RESET 
-              << " m   Speed: " << CYAN << std::setw(6) << speed_ << RESET << " m/s      " << BOLD << "║" << RESET << std::endl;
-    
-    // Leader info
-    double gap = leaderPos - position_;
-    std::string gapColor = (gap > targetDistance_ - 2 && gap < targetDistance_ + 2) ? GREEN : YELLOW;
-    std::cout << BOLD << "║" << RESET << " Leader Pos:  " << CYAN << std::setprecision(1) << std::setw(8) << leaderPos << RESET 
-              << " m   Speed: " << CYAN << std::setw(6) << leaderSpeed << RESET << " m/s      " << BOLD << "║" << RESET << std::endl;
-    std::cout << BOLD << "║" << RESET << " Gap: " << gapColor << std::setprecision(1) << gap << " m" << RESET 
-              << " (target: " << targetDistance_ << " m)                      " << BOLD << "║" << RESET << std::endl;
-    
-    std::cout << BOLD << "╠════════════════════════════════════════════════════════╣" << RESET << std::endl;
-    printClock();
-    std::cout << BOLD << "╠════════════════════════════════════════════════════════╣" << RESET << std::endl;
-    std::cout << BOLD << "║" << RESET << " Controls: [o]=obstacle  [c]=cut-in  [q]=quit         " << BOLD << "║" << RESET << std::endl;
-    std::cout << BOLD << "╚════════════════════════════════════════════════════════╝" << RESET << std::endl;
 }
 
 void FollowingVehicle::connectToLeader(const std::string& ipAddress) {
     leaderIp_ = ipAddress;
-    socketFd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
+    socketFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (socketFd_ < 0) {
-        throw std::runtime_error("Follower: failed to create UDP socket");
+        throw std::runtime_error("Follower: failed to create socket");
     }
 
-    // Bind to ephemeral port so leader can reply
-    sockaddr_in localAddr{};
-    localAddr.sin_family = AF_INET;
-    localAddr.sin_addr.s_addr = INADDR_ANY;
-    localAddr.sin_port = 0;
-    if (::bind(socketFd_, reinterpret_cast<sockaddr*>(&localAddr), sizeof(localAddr)) < 0) {
-        ::close(socketFd_);
-        socketFd_ = -1;
-        throw std::runtime_error("Follower: bind failed");
-    }
-
-    std::memset(&leaderAddr_, 0, sizeof(leaderAddr_));
-    leaderAddr_.sin_family = AF_INET;
-    leaderAddr_.sin_port = htons(PORT);
-    if (::inet_pton(AF_INET, ipAddress.c_str(), &leaderAddr_.sin_addr) <= 0) {
-        ::close(socketFd_);
-        socketFd_ = -1;
+    sockaddr_in serverAddr{};
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(PORT);
+    if (::inet_pton(AF_INET, ipAddress.c_str(), &serverAddr.sin_addr) <= 0) {
         throw std::runtime_error("Follower: invalid IP address");
     }
 
-    // Set recv timeout for JOIN_ACK
-    struct timeval tv{};
-    tv.tv_sec = 2;
-    tv.tv_usec = 0;
-    ::setsockopt(socketFd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    if (::connect(socketFd_, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) < 0) {
+        ::close(socketFd_);
+        socketFd_ = -1;
+        throw std::runtime_error("Follower: communication failure (not connected to leader)");
+    }
+
+    connected_.store(true);
+    std::cout << "Connected to the leading vehicle!" << std::endl;
 
     // Send JOIN message
     WireMessage join{};
@@ -337,34 +275,21 @@ void FollowingVehicle::connectToLeader(const std::string& ipAddress) {
     join.speed = speed_;
     join.obstacle = 0;
     join.flags = FLAG_CONNECTED;
-    std::memcpy(join.clock, clock_, sizeof(clock_));
+    std::memcpy(join.clockMatrix, clock_, sizeof(clock_));
+    sendAll(socketFd_, &join, sizeof(join));
 
-    if (!sendMsgToLeader(&join, sizeof(join))) {
-        ::close(socketFd_);
-        socketFd_ = -1;
-        throw std::runtime_error("Follower: failed to send JOIN");
-    }
-
-    // Wait for JOIN_ACK
+    // Wait for JOIN_ACK so we learn our assigned matrix-clock index.
     WireMessage ack{};
-    sockaddr_in from{};
-    if (!recvMsgFromLeader(&ack, sizeof(ack), &from) ||
+    if (!recvAll(socketFd_, &ack, sizeof(ack)) ||
         static_cast<MsgType>(ack.type) != MsgType::JOIN_ACK) {
-        ::close(socketFd_);
-        socketFd_ = -1;
         throw std::runtime_error("Follower: did not receive JOIN_ACK from leader");
     }
 
     selfIndex_ = ack.assignedIndex;
     initClock();
 
-    connected_.store(true);
-    std::cout << "Connected to the leading vehicle! Assigned clockIndex=" << selfIndex_ << std::endl;
+    std::cout << "Follower " << id_ << " joined platoon. Assigned clockIndex=" << selfIndex_ << std::endl;
 
-    // Remove recv timeout for normal operation
-    tv.tv_sec = 1;
-    tv.tv_usec = 0;
-    ::setsockopt(socketFd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 }
 
 void FollowingVehicle::run() {
@@ -415,7 +340,6 @@ void* FollowingVehicle::inputThreadEntry(void* arg) {
 }
 
 void FollowingVehicle::recvLoop() {
-    int displayCounter = 0;
     while (running_.load()) {
         if (!connected_.load()) {
             // Try reconnect if we were disconnected
@@ -426,9 +350,8 @@ void FollowingVehicle::recvLoop() {
         }
 
         WireMessage msg{};
-        sockaddr_in from{};
-        if (!recvMsgFromLeader(&msg, sizeof(msg), &from)) {
-            std::cerr << RED << "[!] Lost connection to leader (UDP recv timeout)." << RESET << std::endl;
+        if (!recvAll(socketFd_, &msg, sizeof(msg))) {
+            std::cerr << "Follower: lost connection to leader." << std::endl;
             connected_.store(false);
             continue;
         }
@@ -438,17 +361,17 @@ void FollowingVehicle::recvLoop() {
         }
 
         pthread_mutex_lock(&stateMutex_);
-        onClockReceive(msg.senderIndex, msg.clock);
+        onClockReceive(msg.senderIndex, msg.clockMatrix);
 
         const bool leaderObstacle = (msg.obstacle != 0);
         const bool degraded = (msg.flags & FLAG_DEGRADED) != 0;
         updateControl(msg.position, msg.speed, leaderObstacle, degraded);
 
-        // Print dashboard every N iterations
-        if (++displayCounter >= DISPLAY_UPDATE_INTERVAL) {
-            displayCounter = 0;
-            printDashboard(msg.position, msg.speed, degraded);
-        }
+        std::cout << "Following Vehicle ID: " << id_
+                  << "  Position: " << position_
+                  << "  Speed: " << speed_ << std::endl;
+        printClock(msg.numVehicles);
+        std::cout << std::flush;
         pthread_mutex_unlock(&stateMutex_);
     }
 }
@@ -510,11 +433,11 @@ void FollowingVehicle::sendLoop() {
         out.speed = speed_;
         out.obstacle = obstacleDetected_.load() ? 1 : 0;
         out.flags = FLAG_CONNECTED;
-        std::memcpy(out.clock, clock_, sizeof(clock_));
+        std::memcpy(out.clockMatrix, clock_, sizeof(clock_));
         pthread_mutex_unlock(&stateMutex_);
 
-        if (!sendMsgToLeader(&out, sizeof(out))) {
-            std::cerr << "Follower: send failed (leader not reachable)." << std::endl;
+        if (!sendAll(socketFd_, &out, sizeof(out))) {
+            std::cerr << "Follower: send failed (connection lost)." << std::endl;
             connected_.store(false);
         }
 
@@ -547,14 +470,12 @@ void FollowingVehicle::inputLoop() {
                 WireMessage leave{};
                 leave.type = static_cast<std::uint8_t>(MsgType::LEAVE);
                 leave.senderId = id_;
-                leave.senderIndex = selfIndex_;
-                leave.assignedIndex = -1;
                 leave.position = position_;
                 leave.speed = speed_;
                 leave.obstacle = obstacleDetected_.load() ? 1 : 0;
                 leave.flags = 0;
-                std::memcpy(leave.clock, clock_, sizeof(clock_));
-                sendMsgToLeader(&leave, sizeof(leave));
+                std::memcpy(leave.clockMatrix, clock_, sizeof(clock_));
+                sendAll(socketFd_, &leave, sizeof(leave));
             }
             std::cout << "[FOLLOWER] Leaving platoon. Bye!" << std::endl;
             stop();
@@ -564,21 +485,10 @@ void FollowingVehicle::inputLoop() {
 }
 
 void FollowingVehicle::updateControl(double leaderPos, double leaderSpeed, bool leaderObstacle, bool degraded) {
-    // Calculate actual time delta
-    static std::int64_t lastUpdateMs = 0;
-    std::int64_t now = nowMs();
-    double dtSec = (lastUpdateMs == 0) ? 0.0 : static_cast<double>(now - lastUpdateMs) / 1000.0;
-    lastUpdateMs = now;
-    
-    // Clamp dt to avoid huge jumps
-    if (dtSec > 1.0) dtSec = 0.3;
-    if (dtSec < 0.01) dtSec = 0.0;
-
     // Safety: if leader reports obstacle -> slow to stop.
     if (leaderObstacle) {
         speed_ *= 0.7;
         if (speed_ < 0.05) speed_ = 0.0;
-        position_ += speed_ * dtSec;
         return;
     }
 
@@ -590,8 +500,8 @@ void FollowingVehicle::updateControl(double leaderPos, double leaderSpeed, bool 
     // PID-ish on spacing error
     const double gap = leaderPos - position_;
     const double error = gap - targetDistance_;
-    integralError_ += error * dtSec;  // Scale integral by dt
-    const double derivative = (dtSec > 0) ? (error - previousError_) / dtSec : 0.0;
+    integralError_ += error;
+    const double derivative = error - previousError_;
     previousError_ = error;
 
     const double control = Kp_ * error + Ki_ * integralError_ + Kd_ * derivative;
@@ -602,24 +512,33 @@ void FollowingVehicle::updateControl(double leaderPos, double leaderSpeed, bool 
     if (targetSpeed > leaderSpeed + 20.0) targetSpeed = leaderSpeed + 20.0;
 
     // Smooth speed changes
-    speed_ += 0.3 * (targetSpeed - speed_);
+    speed_ += 0.2 * (targetSpeed - speed_);
     if (std::abs(speed_) < 1e-6) speed_ = 0.0;
 
-    // Update position using actual time delta
-    position_ += speed_ * dtSec;
+    // Update position for a simulated step
+    position_ += speed_ * (HEARTBEAT_PERIOD_MS / 1000.0);
 }
 
-bool FollowingVehicle::sendMsgToLeader(const void* data, size_t len) {
-    ssize_t n = ::sendto(socketFd_, data, len, 0,
-                         reinterpret_cast<const sockaddr*>(&leaderAddr_), sizeof(leaderAddr_));
-    return (n == static_cast<ssize_t>(len));
+bool FollowingVehicle::sendAll(int fd, const void* data, size_t len) {
+    const std::uint8_t* p = static_cast<const std::uint8_t*>(data);
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t n = ::send(fd, p + sent, len - sent, 0);
+        if (n <= 0) return false;
+        sent += static_cast<size_t>(n);
+    }
+    return true;
 }
 
-bool FollowingVehicle::recvMsgFromLeader(void* data, size_t len, sockaddr_in* from) {
-    socklen_t fromLen = sizeof(sockaddr_in);
-    ssize_t n = ::recvfrom(socketFd_, data, len, 0, reinterpret_cast<sockaddr*>(from), &fromLen);
-    if (n <= 0) return false;
-    return (static_cast<size_t>(n) == len);
+bool FollowingVehicle::recvAll(int fd, void* data, size_t len) {
+    std::uint8_t* p = static_cast<std::uint8_t*>(data);
+    size_t recvd = 0;
+    while (recvd < len) {
+        ssize_t n = ::recv(fd, p + recvd, len - recvd, 0);
+        if (n <= 0) return false;
+        recvd += static_cast<size_t>(n);
+    }
+    return true;
 }
 
 bool FollowingVehicle::tryReconnect() {
@@ -642,22 +561,37 @@ bool FollowingVehicle::tryReconnect() {
 // Program entry point
 // ---------------------------
 int main(int argc, char** argv) {
-    // Optional CLI: ./follow [id] [initialSpeed] [initialPosition]
+    // Parse command line arguments
     int id = 2;
     double initialSpeed = 0.0;
     double initialPos = 10.0;
+    double targetDistance = 10.0;
+    std::string ip = "127.0.0.1";
 
-    if (argc >= 2) id = std::stoi(argv[1]);
-    if (argc >= 3) initialSpeed = std::stod(argv[2]);
-    if (argc >= 4) initialPos = std::stod(argv[3]);
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--id" && i + 1 < argc) {
+            id = std::stoi(argv[++i]);
+        } else if (arg == "--initspeed" && i + 1 < argc) {
+            initialSpeed = std::stod(argv[++i]);
+        } else if (arg == "--initposition" && i + 1 < argc) {
+            initialPos = std::stod(argv[++i]);
+        } else if (arg == "--distance" && i + 1 < argc) {
+            targetDistance = std::stod(argv[++i]);
+        } else if (arg == "--ip" && i + 1 < argc) {
+            ip = argv[++i];
+        } else {
+            std::cerr << "Unknown argument: " << arg << std::endl;
+            std::cerr << "Usage: ./follow [--id <id>] [--initspeed <speed>] [--initposition <pos>] [--distance <dist>] [--ip <ip>]" << std::endl;
+            return 1;
+        }
+    }
 
     // Control params (tuned lightly for stability)
-    double targetDistance = 10.0;
     double Kp = 0.05, Ki = 0.0005, Kd = 0.02;
 
     try {
         FollowingVehicle follower(id, initialSpeed, initialPos, targetDistance, Kp, Ki, Kd);
-        const std::string ip = (argc >= 5) ? std::string(argv[4]) : std::string("127.0.0.1");
         follower.connectToLeader(ip);
         follower.run();
     } catch (const std::exception& ex) {

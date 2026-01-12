@@ -1,0 +1,1170 @@
+
+Leading Vehicle ID: 1  Position: Leader listening on port 8080...
+50  Speed: 60
+Clock Matrix (1 vehicles):
+2
+
+Leading Vehicle ID: 1  Position: 68.06  Speed: 60
+Clock Matrix (1 vehicles):
+3
+
+Leading Vehicle ID: 1  Position: 86.12  Speed: 60
+Clock Matrix (1 vehicles):
+4
+Follower joined. ID: 2 (clockIndex=1)
+
+Leading Vehicle ID: 1  Position: 104.12  Speed: 60
+Clock Matrix (2 vehicles):
+7 2
+0 2
+
+Leading Vehicle ID: 1  Position: 122.18  Speed: 60
+Clock Matrix (2 vehicles):
+11 9
+7 9
+
+Leading Vehicle ID: 1  Position: 140.18  Speed: 60
+Clock Matrix (2 vehicles):
+12 9
+7 9
+Follower joined. ID: 1 (clockIndex=2)
+
+Leading Vehicle ID: 1  Position: 158.24  Speed: 60
+Clock Matrix (3 vehicles):
+18 14 2
+12 14 0
+0 0 2
+
+Leading Vehicle ID: 1  Position: 176.24  Speed: 60
+Clock Matrix (3 vehicles):
+19 14 2
+12 14 0
+0 0 2
+
+Leading Vehicle ID: 1  Position: 194.3  Speed: 60
+Clock Matrix (3 vehicles):
+24 21 21
+19 21 2
+19 14 21
+
+Leading Vehicle ID: 1  Position: 212.3  Speed: 60
+Clock Matrix (3 vehicles):
+29 26 26
+24 26 21
+24 21 26
+
+Leading Vehicle ID: 1  Position: 230.3  Speed: 60
+Clock Matrix (3 vehicles):
+30 26 26
+24 26 21
+24 21 26
+
+Leading Vehicle ID: 1  Position: 248.36  Speed: 60
+Clock Matrix (3 vehicles):
+35 32 32
+30 32 26
+30 26 32
+
+Leading Vehicle ID: 1  Position: 266.36  Speed: 60
+Clock Matrix (3 vehicles):
+36 32 32
+30 32 26
+30 26 32
+
+Leading Vehicle ID: 1  Position: 284.42  Speed: 60
+Clock Matrix (3 vehicles):
+41 38 38
+36 38 32
+36 32 38
+
+Leading Vehicle ID: 1  Position: 302.48  Speed: 60
+Clock Matrix (3 vehicles):
+46 43 43
+41 43 38
+41 38 43
+
+Leading Vehicle ID: 1  Position: 320.48  Speed: 60
+Clock Matrix (3 vehicles):
+47 43 43
+41 43 38
+41 38 43
+
+Leading Vehicle ID: 1  Position: 338.54  Speed: 60
+Clock Matrix (3 vehicles):
+52 49 49
+47 49 43
+47 43 49
+
+Leading Vehicle ID: 1  Position: 356.6  Speed: 60
+Clock Matrix (3 vehicles):
+53 49 49
+47 49 43
+47 43 49
+
+Leading Vehicle ID: 1  Position: 374.6  Speed: 60
+Clock Matrix (3 vehicles):
+58 55 55
+53 55 49
+53 49 55
+
+Leading Vehicle ID: 1  Position: 392.66  Speed: 60
+Clock Matrix (3 vehicles):
+63 60 60
+58 60 55
+58 55 60
+
+Leading Vehicle ID: 1  Position: 410.72  Speed: 60
+Clock Matrix (3 vehicles):
+64 60 60
+58 60 55
+58 55 60
+
+Leading Vehicle ID: 1  Position: 428.72  Speed: 60
+Clock Matrix (3 vehicles):
+69 66 66
+64 66 60
+64 60 66
+
+Leading Vehicle ID: 1  Position: 446.78  Speed: 60
+Clock Matrix (3 vehicles):
+70 66 66
+64 66 60
+64 60 66
+
+Leading Vehicle ID: 1  Position: 464.78  Speed: 60
+Clock Matrix (3 vehicles):
+75 72 72
+70 72 66
+70 66 72
+
+Leading Vehicle ID: 1  Position: 482.84  Speed: 60
+Clock Matrix (3 vehicles):
+80 77 77
+75 77 72
+75 72 77
+
+Leading Vehicle ID: 1  Position: 500.84  Speed: 60
+Clock Matrix (3 vehicles):
+81 77 77
+75 77 72
+75 72 77
+
+Leading Vehicle ID: 1  Position: 518.9  Speed: 60
+Clock Matrix (3 vehicles):
+86 83 83
+81 83 77
+81 77 83
+
+Leading Vehicle ID: 1  Position: 536.9  Speed: 60
+Clock Matrix (3 vehicles):
+87 83 83
+81 83 77
+81 77 83
+
+Leading Vehicle ID: 1  Position: 554.96  Speed: 60
+Clock Matrix (3 vehicles):
+92 89 89
+87 89 83
+87 83 89
+
+Leading Vehicle ID: 1  Position: 572.96  Speed: 60
+Clock Matrix (3 vehicles):
+97 94 94
+92 94 89
+92 89 94
+
+Leading Vehicle ID: 1  Position: 591.02  Speed: 60
+Clock Matrix (3 vehicles):
+98 94 94
+92 94 89
+92 89 94
+
+Leading Vehicle ID: 1  Position: 609.02  Speed: 60
+Clock Matrix (3 vehicles):
+103 100 100
+98 100 94
+98 94 100
+
+Leading Vehicle ID: 1  Position: 627.08  Speed: 60
+Clock Matrix (3 vehicles):
+104 100 100
+98 100 94
+98 94 100
+
+Leading Vehicle ID: 1  Position: 645.08  Speed: 60
+Clock Matrix (3 vehicles):
+109 106 106
+104 106 100
+104 100 106
+
+Leading Vehicle ID: 1  Position: 663.14  Speed: 60
+Clock Matrix (3 vehicles):
+114 111 111
+109 111 106
+109 106 111
+
+Leading Vehicle ID: 1  Position: 681.14  Speed: 60
+Clock Matrix (3 vehicles):
+115 111 111
+109 111 106
+109 106 111
+
+Leading Vehicle ID: 1  Position: 699.2  Speed: 60
+Clock Matrix (3 vehicles):
+120 117 117
+115 117 111
+115 111 117
+
+Leading Vehicle ID: 1  Position: 717.2  Speed: 60
+Clock Matrix (3 vehicles):
+121 117 117
+115 117 111
+115 111 117
+
+Leading Vehicle ID: 1  Position: 735.2  Speed: 60
+Clock Matrix (3 vehicles):
+126 123 123
+121 123 117
+121 117 123
+
+Leading Vehicle ID: 1  Position: 753.26  Speed: 60
+Clock Matrix (3 vehicles):
+131 128 128
+126 128 123
+126 123 128
+
+Leading Vehicle ID: 1  Position: 771.26  Speed: 60
+Clock Matrix (3 vehicles):
+132 128 128
+126 128 123
+126 123 128
+
+Leading Vehicle ID: 1  Position: 789.32  Speed: 60
+Clock Matrix (3 vehicles):
+137 134 134
+132 134 128
+132 128 134
+
+Leading Vehicle ID: 1  Position: 807.38  Speed: 60
+Clock Matrix (3 vehicles):
+138 134 134
+132 134 128
+132 128 134
+
+Leading Vehicle ID: 1  Position: 825.38  Speed: 60
+Clock Matrix (3 vehicles):
+143 140 140
+138 140 134
+138 134 140
+
+Leading Vehicle ID: 1  Position: 843.44  Speed: 60
+Clock Matrix (3 vehicles):
+148 145 145
+143 145 140
+143 140 145
+
+Leading Vehicle ID: 1  Position: 861.44  Speed: 60
+Clock Matrix (3 vehicles):
+149 145 145
+143 145 140
+143 140 145
+
+Leading Vehicle ID: 1  Position: 879.5  Speed: 60
+Clock Matrix (3 vehicles):
+154 151 151
+149 151 145
+149 145 151
+
+Leading Vehicle ID: 1  Position: 897.5  Speed: 60
+Clock Matrix (3 vehicles):
+155 151 151
+149 151 145
+149 145 151
+
+Leading Vehicle ID: 1  Position: 915.56  Speed: 60
+Clock Matrix (3 vehicles):
+160 157 157
+155 157 151
+155 151 157
+
+Leading Vehicle ID: 1  Position: 933.56  Speed: 60
+Clock Matrix (3 vehicles):
+165 162 162
+160 162 157
+160 157 162
+
+Leading Vehicle ID: 1  Position: 951.62  Speed: 60
+Clock Matrix (3 vehicles):
+166 162 162
+160 162 157
+160 157 162
+
+Leading Vehicle ID: 1  Position: 969.62  Speed: 60
+Clock Matrix (3 vehicles):
+171 168 168
+166 168 162
+166 162 168
+
+Leading Vehicle ID: 1  Position: 987.68  Speed: 60
+Clock Matrix (3 vehicles):
+172 168 168
+166 168 162
+166 162 168
+
+Leading Vehicle ID: 1  Position: 1005.74  Speed: 60
+Clock Matrix (3 vehicles):
+177 174 174
+172 174 168
+172 168 174
+
+Leading Vehicle ID: 1  Position: 1023.74  Speed: 60
+Clock Matrix (3 vehicles):
+182 179 179
+177 179 174
+177 174 179
+
+Leading Vehicle ID: 1  Position: 1041.74  Speed: 60
+Clock Matrix (3 vehicles):
+183 179 179
+177 179 174
+177 174 179
+
+Leading Vehicle ID: 1  Position: 1059.8  Speed: 60
+Clock Matrix (3 vehicles):
+188 185 185
+183 185 179
+183 179 185
+
+Leading Vehicle ID: 1  Position: 1077.8  Speed: 60
+Clock Matrix (3 vehicles):
+189 185 185
+183 185 179
+183 179 185
+
+Leading Vehicle ID: 1  Position: 1095.86  Speed: 60
+Clock Matrix (3 vehicles):
+194 191 191
+189 191 185
+189 185 191
+
+Leading Vehicle ID: 1  Position: 1113.86  Speed: 60
+Clock Matrix (3 vehicles):
+199 196 196
+194 196 191
+194 191 196
+
+Leading Vehicle ID: 1  Position: 1131.92  Speed: 60
+Clock Matrix (3 vehicles):
+200 196 196
+194 196 191
+194 191 196
+
+Leading Vehicle ID: 1  Position: 1149.92  Speed: 60
+Clock Matrix (3 vehicles):
+205 202 202
+200 202 196
+200 196 202
+
+Leading Vehicle ID: 1  Position: 1167.92  Speed: 60
+Clock Matrix (3 vehicles):
+206 202 202
+200 202 196
+200 196 202
+
+Leading Vehicle ID: 1  Position: 1185.98  Speed: 60
+Clock Matrix (3 vehicles):
+211 208 208
+206 208 202
+206 202 208
+
+Leading Vehicle ID: 1  Position: 1203.98  Speed: 60
+Clock Matrix (3 vehicles):
+216 213 213
+211 213 208
+211 208 213
+
+Leading Vehicle ID: 1  Position: 1222.04  Speed: 60
+Clock Matrix (3 vehicles):
+217 213 213
+211 213 208
+211 208 213
+
+Leading Vehicle ID: 1  Position: 1240.04  Speed: 60
+Clock Matrix (3 vehicles):
+222 219 219
+217 219 213
+217 213 219
+
+Leading Vehicle ID: 1  Position: 1258.1  Speed: 60
+Clock Matrix (3 vehicles):
+223 219 219
+217 219 213
+217 213 219
+
+Leading Vehicle ID: 1  Position: 1276.1  Speed: 60
+Clock Matrix (3 vehicles):
+228 225 225
+223 225 219
+223 219 225
+
+Leading Vehicle ID: 1  Position: 1294.16  Speed: 60
+Clock Matrix (3 vehicles):
+233 230 230
+228 230 225
+228 225 230
+
+Leading Vehicle ID: 1  Position: 1312.16  Speed: 60
+Clock Matrix (3 vehicles):
+234 230 230
+228 230 225
+228 225 230
+
+Leading Vehicle ID: 1  Position: 1330.16  Speed: 60
+Clock Matrix (3 vehicles):
+239 236 236
+234 236 230
+234 230 236
+
+Leading Vehicle ID: 1  Position: 1348.22  Speed: 60
+Clock Matrix (3 vehicles):
+240 236 236
+234 236 230
+234 230 236
+
+Leading Vehicle ID: 1  Position: 1366.22  Speed: 60
+Clock Matrix (3 vehicles):
+245 242 242
+240 242 236
+240 236 242
+
+Leading Vehicle ID: 1  Position: 1384.28  Speed: 60
+Clock Matrix (3 vehicles):
+250 247 247
+245 247 242
+245 242 247
+
+Leading Vehicle ID: 1  Position: 1402.28  Speed: 60
+Clock Matrix (3 vehicles):
+251 247 247
+245 247 242
+245 242 247
+
+Leading Vehicle ID: 1  Position: 1420.28  Speed: 60
+Clock Matrix (3 vehicles):
+256 253 253
+251 253 247
+251 247 253
+
+Leading Vehicle ID: 1  Position: 1438.34  Speed: 60
+Clock Matrix (3 vehicles):
+257 253 253
+251 253 247
+251 247 253
+
+Leading Vehicle ID: 1  Position: 1456.34  Speed: 60
+Clock Matrix (3 vehicles):
+262 259 259
+257 259 253
+257 253 259
+
+Leading Vehicle ID: 1  Position: 1474.4  Speed: 60
+Clock Matrix (3 vehicles):
+267 264 264
+262 264 259
+262 259 264
+
+Leading Vehicle ID: 1  Position: 1492.46  Speed: 60
+Clock Matrix (3 vehicles):
+268 264 264
+262 264 259
+262 259 264
+
+Leading Vehicle ID: 1  Position: 1510.46  Speed: 60
+Clock Matrix (3 vehicles):
+273 270 270
+268 270 264
+268 264 270
+
+Leading Vehicle ID: 1  Position: 1528.52  Speed: 60
+Clock Matrix (3 vehicles):
+277 275 270
+273 275 270
+268 264 270
+
+Leading Vehicle ID: 1  Position: 1546.52  Speed: 60
+Clock Matrix (3 vehicles):
+281 275 279
+273 275 270
+277 275 279
+
+Leading Vehicle ID: 1  Position: 1564.52  Speed: 60
+Clock Matrix (3 vehicles):
+286 283 283
+281 283 279
+281 275 283
+
+Leading Vehicle ID: 1  Position: 1582.58  Speed: 60
+Clock Matrix (3 vehicles):
+287 283 283
+281 283 279
+281 275 283
+
+Leading Vehicle ID: 1  Position: 1600.64  Speed: 60
+Clock Matrix (3 vehicles):
+292 289 289
+287 289 283
+287 283 289
+
+Leading Vehicle ID: 1  Position: 1618.64  Speed: 60
+Clock Matrix (3 vehicles):
+296 294 289
+292 294 289
+287 283 289
+
+Leading Vehicle ID: 1  Position: 1636.64  Speed: 60
+Clock Matrix (3 vehicles):
+300 294 298
+292 294 289
+296 294 298
+
+Leading Vehicle ID: 1  Position: 1654.7  Speed: 60
+Clock Matrix (3 vehicles):
+305 302 302
+300 302 298
+300 294 302
+
+Leading Vehicle ID: 1  Position: 1672.7  Speed: 60
+Clock Matrix (3 vehicles):
+306 302 302
+300 302 298
+300 294 302
+
+Leading Vehicle ID: 1  Position: 1690.76  Speed: 60
+Clock Matrix (3 vehicles):
+311 308 308
+306 308 302
+306 302 308
+
+Leading Vehicle ID: 1  Position: 1708.82  Speed: 60
+Clock Matrix (3 vehicles):
+315 313 308
+311 313 308
+306 302 308
+
+Leading Vehicle ID: 1  Position: 1726.82  Speed: 60
+Clock Matrix (3 vehicles):
+319 313 317
+311 313 308
+315 313 317
+
+Leading Vehicle ID: 1  Position: 1744.88  Speed: 60
+Clock Matrix (3 vehicles):
+324 321 321
+319 321 317
+319 313 321
+
+Leading Vehicle ID: 1  Position: 1762.88  Speed: 60
+Clock Matrix (3 vehicles):
+325 321 321
+319 321 317
+319 313 321
+
+Leading Vehicle ID: 1  Position: 1780.94  Speed: 60
+Clock Matrix (3 vehicles):
+330 327 327
+325 327 321
+325 321 327
+
+Leading Vehicle ID: 1  Position: 1798.94  Speed: 60
+Clock Matrix (3 vehicles):
+334 332 327
+330 332 327
+325 321 327
+
+Leading Vehicle ID: 1  Position: 1816.94  Speed: 60
+Clock Matrix (3 vehicles):
+338 332 336
+330 332 327
+334 332 336
+
+Leading Vehicle ID: 1  Position: 1835  Speed: 60
+Clock Matrix (3 vehicles):
+343 340 340
+338 340 336
+338 332 340
+
+Leading Vehicle ID: 1  Position: 1853.06  Speed: 60
+Clock Matrix (3 vehicles):
+344 340 340
+338 340 336
+338 332 340
+
+Leading Vehicle ID: 1  Position: 1871.06  Speed: 60
+Clock Matrix (3 vehicles):
+349 346 346
+344 346 340
+344 340 346
+
+Leading Vehicle ID: 1  Position: 1889.12  Speed: 60
+Clock Matrix (3 vehicles):
+353 351 346
+349 351 346
+344 340 346
+
+Leading Vehicle ID: 1  Position: 1907.12  Speed: 60
+Clock Matrix (3 vehicles):
+357 351 355
+349 351 346
+353 351 355
+
+Leading Vehicle ID: 1  Position: 1925.18  Speed: 60
+Clock Matrix (3 vehicles):
+362 359 359
+357 359 355
+357 351 359
+
+Leading Vehicle ID: 1  Position: 1943.18  Speed: 60
+Clock Matrix (3 vehicles):
+363 359 359
+357 359 355
+357 351 359
+
+Leading Vehicle ID: 1  Position: 1961.24  Speed: 60
+Clock Matrix (3 vehicles):
+368 365 365
+363 365 359
+363 359 365
+
+Leading Vehicle ID: 1  Position: 1979.24  Speed: 60
+Clock Matrix (3 vehicles):
+372 370 365
+368 370 365
+363 359 365
+
+Leading Vehicle ID: 1  Position: 1997.3  Speed: 60
+Clock Matrix (3 vehicles):
+376 370 374
+368 370 365
+372 370 374
+
+Leading Vehicle ID: 1  Position: 2015.36  Speed: 60
+Clock Matrix (3 vehicles):
+381 378 378
+376 378 374
+376 370 378
+
+Leading Vehicle ID: 1  Position: 2033.36  Speed: 60
+Clock Matrix (3 vehicles):
+382 378 378
+376 378 374
+376 370 378
+
+Leading Vehicle ID: 1  Position: 2051.48  Speed: 60
+Clock Matrix (3 vehicles):
+387 384 384
+382 384 378
+382 378 384
+
+Leading Vehicle ID: 1  Position: 2069.48  Speed: 60
+Clock Matrix (3 vehicles):
+391 389 384
+387 389 384
+382 378 384
+
+Leading Vehicle ID: 1  Position: 2087.54  Speed: 60
+Clock Matrix (3 vehicles):
+395 389 393
+387 389 384
+391 389 393
+
+Leading Vehicle ID: 1  Position: 2105.6  Speed: 60
+Clock Matrix (3 vehicles):
+400 397 397
+395 397 393
+395 389 397
+
+Leading Vehicle ID: 1  Position: 2123.6  Speed: 60
+Clock Matrix (3 vehicles):
+401 397 397
+395 397 393
+395 389 397
+
+Leading Vehicle ID: 1  Position: 2141.66  Speed: 60
+Clock Matrix (3 vehicles):
+406 403 403
+401 403 397
+401 397 403
+
+Leading Vehicle ID: 1  Position: 2159.66  Speed: 60
+Clock Matrix (3 vehicles):
+410 408 403
+406 408 403
+401 397 403
+
+Leading Vehicle ID: 1  Position: 2177.66  Speed: 60
+Clock Matrix (3 vehicles):
+414 408 412
+406 408 403
+410 408 412
+
+Leading Vehicle ID: 1  Position: 2195.72  Speed: 60
+Clock Matrix (3 vehicles):
+419 416 416
+414 416 412
+414 408 416
+
+Leading Vehicle ID: 1  Position: 2213.78  Speed: 60
+Clock Matrix (3 vehicles):
+420 416 416
+414 416 412
+414 408 416
+
+Leading Vehicle ID: 1  Position: 2231.78  Speed: 60
+Clock Matrix (3 vehicles):
+425 422 422
+420 422 416
+420 416 422
+
+Leading Vehicle ID: 1  Position: 2249.84  Speed: 60
+Clock Matrix (3 vehicles):
+429 427 422
+425 427 422
+420 416 422
+
+Leading Vehicle ID: 1  Position: 2267.84  Speed: 60
+Clock Matrix (3 vehicles):
+433 427 431
+425 427 422
+429 427 431
+
+Leading Vehicle ID: 1  Position: 2285.9  Speed: 60
+Clock Matrix (3 vehicles):
+438 435 435
+433 435 431
+433 427 435
+
+Leading Vehicle ID: 1  Position: 2303.9  Speed: 60
+Clock Matrix (3 vehicles):
+439 435 435
+433 435 431
+433 427 435
+
+Leading Vehicle ID: 1  Position: 2321.96  Speed: 60
+Clock Matrix (3 vehicles):
+444 441 441
+439 441 435
+439 435 441
+
+Leading Vehicle ID: 1  Position: 2339.96  Speed: 60
+Clock Matrix (3 vehicles):
+448 446 441
+444 446 441
+439 435 441
+
+Leading Vehicle ID: 1  Position: 2357.96  Speed: 60
+Clock Matrix (3 vehicles):
+452 446 450
+444 446 441
+448 446 450
+
+Leading Vehicle ID: 1  Position: 2376.02  Speed: 60
+Clock Matrix (3 vehicles):
+457 454 454
+452 454 450
+452 446 454
+
+Leading Vehicle ID: 1  Position: 2394.02  Speed: 60
+Clock Matrix (3 vehicles):
+458 454 454
+452 454 450
+452 446 454
+
+Leading Vehicle ID: 1  Position: 2412.08  Speed: 60
+Clock Matrix (3 vehicles):
+463 460 460
+458 460 454
+458 454 460
+
+Leading Vehicle ID: 1  Position: 2430.14  Speed: 60
+Clock Matrix (3 vehicles):
+467 465 460
+463 465 460
+458 454 460
+
+Leading Vehicle ID: 1  Position: 2448.14  Speed: 60
+Clock Matrix (3 vehicles):
+471 465 469
+463 465 460
+467 465 469
+
+Leading Vehicle ID: 1  Position: 2466.2  Speed: 60
+Clock Matrix (3 vehicles):
+476 473 473
+471 473 469
+471 465 473
+
+Leading Vehicle ID: 1  Position: 2484.26  Speed: 60
+Clock Matrix (3 vehicles):
+477 473 473
+471 473 469
+471 465 473
+
+Leading Vehicle ID: 1  Position: 2502.32  Speed: 60
+Clock Matrix (3 vehicles):
+482 479 479
+477 479 473
+477 473 479
+
+Leading Vehicle ID: 1  Position: 2520.32  Speed: 60
+Clock Matrix (3 vehicles):
+486 484 479
+482 484 479
+477 473 479
+
+Leading Vehicle ID: 1  Position: 2538.32  Speed: 60
+Clock Matrix (3 vehicles):
+490 484 488
+482 484 479
+486 484 488
+
+Leading Vehicle ID: 1  Position: 2556.38  Speed: 60
+Clock Matrix (3 vehicles):
+495 492 492
+490 492 488
+490 484 492
+
+Leading Vehicle ID: 1  Position: 2574.44  Speed: 60
+Clock Matrix (3 vehicles):
+496 492 492
+490 492 488
+490 484 492
+
+Leading Vehicle ID: 1  Position: 2592.44  Speed: 60
+Clock Matrix (3 vehicles):
+501 498 498
+496 498 492
+496 492 498
+
+Leading Vehicle ID: 1  Position: 2610.44  Speed: 60
+Clock Matrix (3 vehicles):
+505 503 498
+501 503 498
+496 492 498
+
+Leading Vehicle ID: 1  Position: 2628.5  Speed: 60
+Clock Matrix (3 vehicles):
+509 503 507
+501 503 498
+505 503 507
+
+Leading Vehicle ID: 1  Position: 2646.56  Speed: 60
+Clock Matrix (3 vehicles):
+514 511 511
+509 511 507
+509 503 511
+
+Leading Vehicle ID: 1  Position: 2664.56  Speed: 60
+Clock Matrix (3 vehicles):
+515 511 511
+509 511 507
+509 503 511
+
+Leading Vehicle ID: 1  Position: 2682.62  Speed: 60
+Clock Matrix (3 vehicles):
+520 517 517
+515 517 511
+515 511 517
+
+Leading Vehicle ID: 1  Position: 2700.62  Speed: 60
+Clock Matrix (3 vehicles):
+524 522 517
+520 522 517
+515 511 517
+
+Leading Vehicle ID: 1  Position: 2718.68  Speed: 60
+Clock Matrix (3 vehicles):
+528 522 526
+520 522 517
+524 522 526
+
+Leading Vehicle ID: 1  Position: 2736.74  Speed: 60
+Clock Matrix (3 vehicles):
+533 530 530
+528 530 526
+528 522 530
+
+Leading Vehicle ID: 1  Position: 2754.8  Speed: 60
+Clock Matrix (3 vehicles):
+534 530 530
+528 530 526
+528 522 530
+
+Leading Vehicle ID: 1  Position: 2772.86  Speed: 60
+Clock Matrix (3 vehicles):
+539 536 536
+534 536 530
+534 530 536
+
+Leading Vehicle ID: 1  Position: 2790.86  Speed: 60
+Clock Matrix (3 vehicles):
+543 541 536
+539 541 536
+534 530 536
+
+Leading Vehicle ID: 1  Position: 2808.92  Speed: 60
+Clock Matrix (3 vehicles):
+547 541 545
+539 541 536
+543 541 545
+
+Leading Vehicle ID: 1  Position: 2826.92  Speed: 60
+Clock Matrix (3 vehicles):
+552 549 549
+547 549 545
+547 541 549
+
+Leading Vehicle ID: 1  Position: 2844.98  Speed: 60
+Clock Matrix (3 vehicles):
+553 549 549
+547 549 545
+547 541 549
+
+Leading Vehicle ID: 1  Position: 2863.04  Speed: 60
+Clock Matrix (3 vehicles):
+558 555 555
+553 555 549
+553 549 555
+
+Leading Vehicle ID: 1  Position: 2881.04  Speed: 60
+Clock Matrix (3 vehicles):
+562 560 555
+558 560 555
+553 549 555
+
+Leading Vehicle ID: 1  Position: 2899.1  Speed: 60
+Clock Matrix (3 vehicles):
+566 560 564
+558 560 555
+562 560 564
+
+Leading Vehicle ID: 1  Position: 2917.16  Speed: 60
+Clock Matrix (3 vehicles):
+571 568 568
+566 568 564
+566 560 568
+
+Leading Vehicle ID: 1  Position: 2935.16  Speed: 60
+Clock Matrix (3 vehicles):
+572 568 568
+566 568 564
+566 560 568
+
+Leading Vehicle ID: 1  Position: 2953.22  Speed: 60
+Clock Matrix (3 vehicles):
+577 574 574
+572 574 568
+572 568 574
+
+Leading Vehicle ID: 1  Position: 2971.22  Speed: 60
+Clock Matrix (3 vehicles):
+581 579 574
+577 579 574
+572 568 574
+
+Leading Vehicle ID: 1  Position: 2989.28  Speed: 60
+Clock Matrix (3 vehicles):
+585 579 583
+577 579 574
+581 579 583
+
+Leading Vehicle ID: 1  Position: 3007.28  Speed: 60
+Clock Matrix (3 vehicles):
+590 587 587
+585 587 583
+585 579 587
+
+Leading Vehicle ID: 1  Position: 3025.34  Speed: 60
+Clock Matrix (3 vehicles):
+591 587 587
+585 587 583
+585 579 587
+
+Leading Vehicle ID: 1  Position: 3043.34  Speed: 60
+Clock Matrix (3 vehicles):
+596 593 593
+591 593 587
+591 587 593
+
+Leading Vehicle ID: 1  Position: 3061.4  Speed: 60
+Clock Matrix (3 vehicles):
+600 598 593
+596 598 593
+591 587 593
+
+Leading Vehicle ID: 1  Position: 3079.4  Speed: 60
+Clock Matrix (3 vehicles):
+604 598 602
+596 598 593
+600 598 602
+
+Leading Vehicle ID: 1  Position: 3097.46  Speed: 60
+Clock Matrix (3 vehicles):
+609 606 606
+604 606 602
+604 598 606
+
+Leading Vehicle ID: 1  Position: 3115.52  Speed: 60
+Clock Matrix (3 vehicles):
+610 606 606
+604 606 602
+604 598 606
+
+Leading Vehicle ID: 1  Position: 3133.52  Speed: 60
+Clock Matrix (3 vehicles):
+615 612 612
+610 612 606
+610 606 612
+
+Leading Vehicle ID: 1  Position: 3151.58  Speed: 60
+Clock Matrix (3 vehicles):
+619 617 612
+615 617 612
+610 606 612
+
+Leading Vehicle ID: 1  Position: 3169.58  Speed: 60
+Clock Matrix (3 vehicles):
+623 617 621
+615 617 612
+619 617 621
+
+Leading Vehicle ID: 1  Position: 3187.58  Speed: 60
+Clock Matrix (3 vehicles):
+628 625 625
+623 625 621
+623 617 625
+
+Leading Vehicle ID: 1  Position: 3205.64  Speed: 60
+Clock Matrix (3 vehicles):
+629 625 625
+623 625 621
+623 617 625
+
+Leading Vehicle ID: 1  Position: 3223.64  Speed: 60
+Clock Matrix (3 vehicles):
+634 631 631
+629 631 625
+629 625 631
+
+Leading Vehicle ID: 1  Position: 3241.7  Speed: 60
+Clock Matrix (3 vehicles):
+638 636 631
+634 636 631
+629 625 631
+
+Leading Vehicle ID: 1  Position: 3259.76  Speed: 60
+Clock Matrix (3 vehicles):
+642 636 640
+634 636 631
+638 636 640
+
+Leading Vehicle ID: 1  Position: 3277.76  Speed: 60
+Clock Matrix (3 vehicles):
+647 644 644
+642 644 640
+642 636 644
+
+Leading Vehicle ID: 1  Position: 3295.82  Speed: 60
+Clock Matrix (3 vehicles):
+648 644 644
+642 644 640
+642 636 644
+
+Leading Vehicle ID: 1  Position: 3313.82  Speed: 60
+Clock Matrix (3 vehicles):
+653 650 650
+648 650 644
+648 644 650
+
+Leading Vehicle ID: 1  Position: 3331.88  Speed: 60
+Clock Matrix (3 vehicles):
+657 655 650
+653 655 650
+648 644 650
+
+Leading Vehicle ID: 1  Position: 3349.94  Speed: 60
+Clock Matrix (3 vehicles):
+661 655 659
+653 655 650
+657 655 659
+
+Leading Vehicle ID: 1  Position: 3367.94  Speed: 60
+Clock Matrix (3 vehicles):
+666 663 663
+661 663 659
+661 655 663
+
+Leading Vehicle ID: 1  Position: 3386  Speed: 60
+Clock Matrix (3 vehicles):
+667 663 663
+661 663 659
+661 655 663
+
+Leading Vehicle ID: 1  Position: 3404  Speed: 60
+Clock Matrix (3 vehicles):
+672 669 669
+667 669 663
+667 663 669
+
+Leading Vehicle ID: 1  Position: 3422.06  Speed: 60
+Clock Matrix (3 vehicles):
+676 674 669
+672 674 669
+667 663 669
+
+Leading Vehicle ID: 1  Position: 3440.06  Speed: 60
+Clock Matrix (3 vehicles):
+680 674 678
+672 674 669
+676 674 678
+
+Leading Vehicle ID: 1  Position: 3458.12  Speed: 60
+Clock Matrix (3 vehicles):
+685 682 682
+680 682 678
+680 674 682
+
+Leading Vehicle ID: 1  Position: 3476.12  Speed: 60
+Clock Matrix (3 vehicles):
+686 682 682
+680 682 678
+680 674 682
+
+Leading Vehicle ID: 1  Position: 3494.18  Speed: 60
+Clock Matrix (3 vehicles):
+691 688 688
+686 688 682
+686 682 688
+
+Leading Vehicle ID: 1  Position: 3512.18  Speed: 60
+Clock Matrix (3 vehicles):
+695 693 688
+691 693 688
+686 682 688
+
+Leading Vehicle ID: 1  Position: 3530.24  Speed: 60
+Clock Matrix (3 vehicles):
+699 693 697
+691 693 688
+695 693 697
+
+Leading Vehicle ID: 1  Position: 3548.24  Speed: 60
+Clock Matrix (3 vehicles):
+704 701 701
+699 701 697
+699 693 701
+
+Leading Vehicle ID: 1  Position: 3566.3  Speed: 60
+Clock Matrix (3 vehicles):
+705 701 701
+699 701 697
+699 693 701
