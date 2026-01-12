@@ -1,7 +1,7 @@
 // message.h - shared wire protocol for leader/follower communication
 //
 // Goals:
-//  - Safe over TCP: fixed-size POD struct (no std::vector)
+//  - Safe over UDP: fixed-size POD struct (no std::vector)
 //  - Implements a logical matrix clock pattern (fixed MAX_NODES)
 //  - Supports: join, leave, leader state, follower state (heartbeat), and degraded mode.
 

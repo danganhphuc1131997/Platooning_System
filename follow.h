@@ -5,7 +5,7 @@
  *
  * Changes vs. original version:
  *  - Uses pthreads + mutex (no OpenMP for sockets)
- *  - Uses fixed-size WireMessage for TCP communication
+ *  - Uses fixed-size WireMessage for UDP communication
  *  - Adds Cut-in simulation: temporarily pause heartbeat to emulate partition
  *  - Safe mode when connection is lost; optional reconnect
  */
@@ -44,6 +44,7 @@ private:
     int id_;
     int selfIndex_{-1};
     std::string leaderIp_;
+    sockaddr_in leaderAddr_{};
 
     double position_;
     double speed_;
@@ -87,11 +88,12 @@ private:
     void onClockReceive(int senderIdx, const std::int32_t other[MAX_NODES][MAX_NODES]);
     void onClockLocalEvent();
     void printClock();
+    void printDashboard(double leaderPos, double leaderSpeed, bool degraded);
 
     void updateControl(double leaderPos, double leaderSpeed, bool leaderObstacle, bool degraded);
 
-    bool sendAll(int fd, const void* data, size_t len);
-    bool recvAll(int fd, void* data, size_t len);
+    bool sendMsgToLeader(const void* data, size_t len);
+    bool recvMsgFromLeader(void* data, size_t len, sockaddr_in* from);
 
     static std::int64_t nowMs();
     bool tryReconnect();

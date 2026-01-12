@@ -4,6 +4,7 @@
 /out/
 cmake-build-*/
 build-*/
+/dsrc
 
 # CMake files and build artefacts
 CMakeFiles/

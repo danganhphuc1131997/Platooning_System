@@ -6,17 +6,17 @@
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                         PLATOONING SYSTEM                                    │
 │                                                                              │
-│   ┌─────────────┐         TCP/IP (port 8080)         ┌─────────────┐        │
-│   │   LEADER    │◄──────────────────────────────────►│  FOLLOWER   │        │
-│   │  (lead.cpp) │         WireMessage                │ (follow.cpp)│        │
-│   └─────────────┘                                    └─────────────┘        │
-│         ▲                                                   ▲               │
-│         │                                                   │               │
-│         ▼                                                   ▼               │
-│   ┌─────────────┐                                    ┌─────────────┐        │
-│   │  FOLLOWER   │                                    │  FOLLOWER   │        │
-│   │ (follow.cpp)│                                    │ (follow.cpp)│        │
-│   └─────────────┘                                    └─────────────┘        │
+│   ┌─────────────┐          UDP (port 8080)           ┌─────────────┐         │
+│   │   LEADER    │◄──────────────────────────────────►│  FOLLOWER   │         │
+│   │  (lead.cpp) │         WireMessage                │ (follow.cpp)│         │
+│   └─────────────┘                                    └─────────────┘         │
+│         ▲                                                   ▲                │
+│         │                                                   │                │
+│         ▼                                                   ▼                │
+│   ┌─────────────┐                                    ┌─────────────┐         │
+│   │  FOLLOWER   │                                    │  FOLLOWER   │         │
+│   │ (follow.cpp)│                                    │ (follow.cpp)│         │
+│   └─────────────┘                                    └─────────────┘         │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -28,22 +28,21 @@
 ```mermaid
 flowchart TB
     subgraph Leader["🚗 Leader Vehicle (lead.cpp)"]
-        LS[Server Socket<br/>Port 8080]
+        LS[UDP Socket<br/>Port 8080]
         LM[Mutex Lock]
         LC[Matrix Clock<br/>MAX_NODES x MAX_NODES]
         
         subgraph LThreads["Threads"]
-            AT[Accept Thread]
+            RT[Recv Thread]
             BT[Broadcast Thread]
             MT[Monitor Thread]
-            HT[Handler Threads<br/>per follower]
         end
         
         LState["State:<br/>• position<br/>• speed<br/>• obstacle flag<br/>• degraded mode"]
     end
 
     subgraph Follower["🚙 Follower Vehicle (follow.cpp)"]
-        FS[TCP Socket]
+        FS[UDP Socket]
         FM[Mutex Lock]
         FC[Matrix Clock<br/>MAX_NODES x MAX_NODES]
         
@@ -144,8 +143,8 @@ stateDiagram-v2
 
     state Leader {
         [*] --> Listening
-        Listening --> AcceptingFollowers : accept()
-        AcceptingFollowers --> Broadcasting : follower joined
+        Listening --> ReceivingMessages : bind()
+        ReceivingMessages --> Broadcasting : follower joined (JOIN)
         Broadcasting --> DegradedMode : heartbeat timeout
         DegradedMode --> Broadcasting : heartbeat resumed
         Broadcasting --> Stopped : obstacle detected
@@ -173,12 +172,9 @@ stateDiagram-v2
 flowchart LR
     subgraph Leader
         direction TB
-        Main1[main] --> Accept[acceptLoop]
+        Main1[main] --> Recv[recvLoop]
         Main1 --> Broadcast[broadcastLoop]
         Main1 --> Monitor[monitorLoop]
-        Accept --> Handler1[handleFollower 1]
-        Accept --> Handler2[handleFollower 2]
-        Accept --> HandlerN[handleFollower N]
     end
 
     subgraph Follower
@@ -188,8 +184,7 @@ flowchart LR
         Main2 --> Input[inputLoop]
     end
 
-    Handler1 -.->|mutex| State1[(Shared State)]
-    Handler2 -.->|mutex| State1
+    Recv -.->|mutex| State1[(Shared State)]
     Broadcast -.->|mutex| State1
     Monitor -.->|mutex| State1
 
@@ -232,13 +227,21 @@ flowchart TD
 
 ```
 Platooning_System/
-├── message.h       # Shared wire protocol (WireMessage, MsgType, Flags)
-├── lead.h          # Leader class declaration
-├── lead.cpp        # Leader implementation
-├── follow.h        # Follower class declaration
-├── follow.cpp      # Follower implementation
-├── README_RUN.md   # Build & run instructions
-└── ARCHITECTURE.md # This file
+├── message.h         # Shared wire protocol (WireMessage, MsgType, Flags)
+├── lead.h            # Leader class declaration
+├── lead.cpp          # Leader implementation
+├── follow.h          # Follower class declaration
+├── follow.cpp        # Follower implementation
+├── README_RUN.md     # Build & run instructions
+├── ARCHITECTURE.md   # This file
+│
+└── dsrc/             # 🆕 DSRC V2V Refactored Version
+    ├── bsm.h         # Basic Safety Message (SAE J2735 inspired)
+    ├── vehicle.h     # Unified vehicle node
+    ├── vehicle.cpp   # Vehicle implementation
+    ├── main.cpp      # Entry point
+    ├── Makefile      # Build system
+    └── README.md     # DSRC-specific docs
 ```
 
 ---
@@ -247,8 +250,8 @@ Platooning_System/
 
 | Component | Port | Protocol | Key Features |
 |-----------|------|----------|--------------|
-| Leader    | 8080 | TCP      | Accept followers, broadcast state, monitor heartbeats |
-| Follower  | -    | TCP      | Connect to leader, PID control, send heartbeat |
+| Leader    | 8080 | UDP      | Receive from followers, broadcast state, monitor heartbeats |
+| Follower  | ephemeral | UDP | Send to leader, receive broadcasts, PID control |
 
 | Message Type    | Direction       | Purpose |
 |-----------------|-----------------|---------|
@@ -257,3 +260,121 @@ Platooning_System/
 | LEAVE           | Follower→Leader | Graceful departure |
 | LEADER_STATE    | Leader→Follower | Broadcast position/speed |
 | FOLLOWER_STATE  | Follower→Leader | Heartbeat + state update |
+
+---
+
+## DSRC V2V Version (Recommended for Real-World)
+
+The `dsrc/` folder contains a refactored version using UDP broadcast, which is more suitable for real V2V/DSRC deployment.
+
+### Key Differences
+
+| Aspect | Main Version | DSRC Version |
+|--------|-------------|--------------|
+| Transport | UDP (unicast) | **UDP broadcast/multicast** |
+| Topology | Star (all → leader) | **Mesh** (all hear all) |
+| Binary | Separate `lead` + `follow` | **Single `platoon`** |
+| Leadership | Fixed leader server | **Position-based** (auto failover) |
+| Message | Custom `WireMessage` | **BSM** (SAE J2735 inspired) |
+| Frequency | Variable | **10 Hz** (DSRC standard) |
+
+### DSRC Architecture
+
+```mermaid
+flowchart TB
+    subgraph DSRC["UDP Broadcast Channel (Port 5900)"]
+        direction LR
+        V1["🚗 Vehicle 1<br/>(Position 0 = Leader)"]
+        V2["🚙 Vehicle 2<br/>(Position 1)"]
+        V3["🚙 Vehicle 3<br/>(Position 2)"]
+    end
+
+    V1 <-->|BSM @ 10Hz| V2
+    V2 <-->|BSM @ 10Hz| V3
+    V1 <-->|BSM @ 10Hz| V3
+
+    Note["All vehicles broadcast BSM<br/>All vehicles listen<br/>Leader = lowest alive position"]
+```
+
+### Leader Failover
+
+```mermaid
+sequenceDiagram
+    participant V1 as Vehicle 1 (pos=0)
+    participant V2 as Vehicle 2 (pos=1)
+    participant V3 as Vehicle 3 (pos=2)
+
+    Note over V1,V3: Normal Operation
+    V1->>V2: BSM (Leader)
+    V1->>V3: BSM (Leader)
+    V2->>V1: BSM
+    V3->>V1: BSM
+
+    Note over V1: Leader leaves/crashes
+    V1--xV2: BSM timeout (500ms)
+    V1--xV3: BSM timeout (500ms)
+
+    Note over V2: No peer with position < 1 alive
+    V2->>V2: Become Leader (position = 0)
+    
+    Note over V2,V3: V2 is now Leader
+    V2->>V3: BSM (Leader)
+    V3->>V2: BSM
+```
+
+### Build & Run DSRC Version
+
+```bash
+cd dsrc
+make
+
+# Terminal 1 - Leader
+./platoon 1 100 0
+
+# Terminal 2 - Follower
+./platoon 2 100 1
+
+# Terminal 3 - Follower
+./platoon 3 100 2
+```
+
+### BSM Message Format
+
+```mermaid
+classDiagram
+    class PlatoonBSM {
+        +uint32_t vehicleId
+        +uint32_t platoonId
+        +uint8_t platoonPosition
+        +double latitude
+        +double longitude
+        +float speed
+        +float acceleration
+        +float heading
+        +float targetGap
+        +float actualGap
+        +uint8_t brakeStatus
+        +uint8_t intentFlags
+        +uint64_t timestampMs
+        +int32_t vectorClock[]
+    }
+
+    class Intent {
+        <<flags>>
+        JOINING
+        LEAVING
+        EMERGENCY
+        LANE_CHANGE
+    }
+
+    class BrakeStatus {
+        <<flags>>
+        APPLIED
+        ABS_ACTIVE
+        STABILITY
+        TRACTION
+    }
+
+    PlatoonBSM --> Intent
+    PlatoonBSM --> BrakeStatus
+```

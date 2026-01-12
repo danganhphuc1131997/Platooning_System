@@ -4,7 +4,8 @@ This updated version aligns with the professor’s requirements we discussed:
 
 ## What was fixed/added
 - ✅ **pthreads + mutex** for parallel execution (no OpenMP for `send/recv`)
-- ✅ **Safe TCP messages** (fixed-size `WireMessage`, no `std::vector` in `send()`)
+- ✅ **UDP communication** (connectionless, using `sendto/recvfrom`)
+- ✅ **Safe messages** (fixed-size `WireMessage`, no `std::vector` in `send()`)
 - ✅ **Node failure detection** via **heartbeat + timeout**
 - ✅ **Your use case**: **cut-in / temporary communication loss** (`c`) → leader enters **degraded mode** (slows down slightly) → then recovers
 - ✅ **Logical matrix clock pattern** (fixed `MAX_NODES` matrix, merged on receive)
