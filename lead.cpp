@@ -133,12 +133,9 @@ void updateDashboard() {
     if (emergency) {
         std::cout << COLOR_RED << "ACTIVE" << COLOR_RESET;
     } else {
-        std::cout << COLOR_GREEN << "  OK  " << COLOR_RESET;
+        std::cout << COLOR_GREEN << "  NO  " << COLOR_RESET;
     }
     std::cout << "              ║\n";
-    
-    std::cout << "║  " << COLOR_CYAN << "Broadcast #:" << COLOR_RESET << " " << std::setw(8) << broadcast_seq;
-    std::cout << "                                       ║\n";
     
     std::cout << "╠══════════════════════════════════════════════════════════════╣\n";
     std::cout << "║  " << COLOR_BOLD << "FOLLOWERS (" << followers.size() << ")" << COLOR_RESET << "                                              ║\n";
@@ -155,13 +152,106 @@ void updateDashboard() {
         }
     }
     
-    std::cout << "╠══════════════════════════════════════════════════════════════╣\n";
-    std::cout << "║  " << COLOR_CYAN << "LAST EVENT:" << COLOR_RESET << "                                                 ║\n";
     std::cout << "╚══════════════════════════════════════════════════════════════╝\n";
     std::cout << std::flush;
 }
 
-// ============== TCP: JOIN MANAGEMENT ==============
+// ============== TCP: MESSAGE HANDLERS ==============
+
+/**
+ * @brief Handle JOIN_REQUEST from a follower
+ * @param client_socket Socket to send response
+ * @param buffer Raw message buffer
+ * @param len Length of received data
+ * @return true if handled successfully
+ */
+bool handleJoinRequest(int client_socket, const uint8_t* buffer, ssize_t len) {
+    if (len != sizeof(JoinRequest)) {
+        return false;
+    }
+    
+    const JoinRequest* req = reinterpret_cast<const JoinRequest*>(buffer);
+    
+    std::lock_guard<std::mutex> lock(platoon_mtx);
+    
+    // Register follower
+    FollowerInfo info;
+    info.index = next_index++;
+    info.vehicle_id = std::string(req->vehicle_id);
+    info.speed = req->speed;
+    info.position = req->position;
+    info.distance_to_leader = leader_position - req->position;
+    info.last_seen_ms = nowMs();
+    followers.push_back(info);
+    
+    // Send response
+    JoinResponse resp{};
+    resp.type = static_cast<uint8_t>(MsgType::JOIN_RESPONSE);
+    resp.accepted = 1;
+    resp.assigned_index = info.index;
+    snprintf(resp.message, sizeof(resp.message), "Welcome to platoon, position #%d", info.index);
+    
+    send(client_socket, &resp, sizeof(resp), 0);
+    
+    logEvent("✅ JOIN: " + info.vehicle_id + " → Position #" + std::to_string(info.index));
+    return true;
+}
+
+/**
+ * @brief Handle LEAVE_REQUEST from a follower
+ * @param client_socket Socket to send response
+ * @param buffer Raw message buffer
+ * @param len Length of received data
+ * @return true if handled successfully
+ */
+bool handleLeaveRequest(int client_socket, const uint8_t* buffer, ssize_t len) {
+    if (len != sizeof(LeaveRequest)) {
+        return false;
+    }
+    
+    const LeaveRequest* req = reinterpret_cast<const LeaveRequest*>(buffer);
+    
+    std::lock_guard<std::mutex> lock(platoon_mtx);
+    
+    // Find and remove follower
+    bool found = false;
+    std::string leaving_id;
+    int leaving_index = req->vehicle_index;
+    
+    for (auto it = followers.begin(); it != followers.end(); ++it) {
+        if (it->index == req->vehicle_index) {
+            leaving_id = it->vehicle_id;
+            followers.erase(it);
+            found = true;
+            break;
+        }
+    }
+    
+    // Send response
+    LeaveResponse resp{};
+    resp.type = static_cast<uint8_t>(MsgType::LEAVE_RESPONSE);
+    
+    if (found) {
+        resp.success = 1;
+        snprintf(resp.message, sizeof(resp.message), "Goodbye, removed from platoon");
+        
+        const char* reason_str = "normal";
+        if (req->reason == 1) reason_str = "emergency";
+        else if (req->reason == 2) reason_str = "maintenance";
+        
+        logEvent("🚪 LEAVE: " + leaving_id + " (Position #" + std::to_string(leaving_index) + 
+                 ", reason: " + reason_str + ")");
+    } else {
+        resp.success = 0;
+        snprintf(resp.message, sizeof(resp.message), "Vehicle not found in platoon");
+        logEvent("⚠️ LEAVE failed: Vehicle #" + std::to_string(req->vehicle_index) + " not found");
+    }
+    
+    send(client_socket, &resp, sizeof(resp), 0);
+    return found;
+}
+
+// ============== TCP: MANAGEMENT SERVER ==============
 void tcp_management_server() {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
@@ -184,7 +274,7 @@ void tcp_management_server() {
     }
     
     listen(server_fd, 5);
-    log("TCP", "✅ Listening on port " + std::to_string(TCP_PORT) + " for JOIN requests");
+    log("TCP", "✅ Listening on port " + std::to_string(TCP_PORT) + " for management requests");
 
     while (true) {
         sockaddr_in client_addr{};
@@ -199,35 +289,32 @@ void tcp_management_server() {
         char client_ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
         
-        // Receive JOIN request
-        JoinRequest req{};
-        ssize_t n = read(client_socket, &req, sizeof(req));
+        // Receive message (use max size of all possible messages)
+        uint8_t buffer[256];
+        ssize_t n = read(client_socket, buffer, sizeof(buffer));
         
-        if (n == sizeof(req) && req.type == static_cast<uint8_t>(MsgType::JOIN_REQUEST)) {
-            std::lock_guard<std::mutex> lock(platoon_mtx);
+        if (n > 0) {
+            // First byte is always message type
+            MsgType msg_type = static_cast<MsgType>(buffer[0]);
             
-            // Register follower
-            FollowerInfo info;
-            info.index = next_index++;
-            info.vehicle_id = std::string(req.vehicle_id);
-            info.speed = req.speed;
-            info.position = req.position;
-            info.distance_to_leader = leader_position - req.position;
-            info.last_seen_ms = nowMs();
-            followers.push_back(info);
-            
-            // Send response
-            JoinResponse resp{};
-            resp.type = static_cast<uint8_t>(MsgType::JOIN_RESPONSE);
-            resp.accepted = 1;
-            resp.assigned_index = info.index;
-            snprintf(resp.message, sizeof(resp.message), "Welcome to platoon, position #%d", info.index);
-            
-            send(client_socket, &resp, sizeof(resp), 0);
-            
-            logEvent("✅ JOIN: " + info.vehicle_id + " → Position #" + std::to_string(info.index));
-        } else {
-            log("TCP", "⚠️  Invalid JOIN request from " + std::string(client_ip));
+            switch (msg_type) {
+                case MsgType::JOIN_REQUEST:
+                    if (!handleJoinRequest(client_socket, buffer, n)) {
+                        log("TCP", "⚠️ Invalid JOIN_REQUEST from " + std::string(client_ip));
+                    }
+                    break;
+                    
+                case MsgType::LEAVE_REQUEST:
+                    if (!handleLeaveRequest(client_socket, buffer, n)) {
+                        log("TCP", "⚠️ Invalid LEAVE_REQUEST from " + std::string(client_ip));
+                    }
+                    break;
+                    
+                default:
+                    log("TCP", "⚠️ Unknown message type " + std::to_string(buffer[0]) + 
+                        " from " + std::string(client_ip));
+                    break;
+            }
         }
         
         close(client_socket);
@@ -312,6 +399,7 @@ void udp_receive_follower_state() {
         ssize_t n = recvfrom(sock, &msg, sizeof(msg), 0, 
                             (struct sockaddr*)&from, &from_len);
         
+        // Handle more messages here, for example a follower truck faces an ostacle
         if (n == sizeof(msg) && msg.type == static_cast<uint8_t>(MsgType::FOLLOWER_STATE)) {
             std::lock_guard<std::mutex> lock(platoon_mtx);
             

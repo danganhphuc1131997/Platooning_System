@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <sstream>
+#include <string>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -40,6 +41,7 @@ std::mutex log_mtx;
 // Dashboard mode flag
 bool dashboard_mode = false;
 int event_line = 14;
+int input_line = 16;  // Line for command input
 
 std::string getTimestamp() {
     auto now = std::chrono::system_clock::now();
@@ -99,10 +101,11 @@ uint32_t last_leader_seq = 0;
 
 std::atomic<bool> joined{false};
 std::atomic<bool> running{true};
+std::atomic<bool> position_initialized{false};  // Flag to init position once
 uint32_t send_seq = 0;
 
 // Leader IP (set from command line)
-const char* g_leader_ip = "127.0.0.1";
+std::string g_leader_ip = "127.0.0.1";
 
 // ============== UTILITY ==============
 uint64_t nowMs() {
@@ -131,12 +134,17 @@ void updateFollowerDashboard() {
     // Gap visualization
     std::cout << "║  " << COLOR_CYAN << "Gap to Leader:" << COLOR_RESET << " ";
     double gap = distance_to_leader;
-    if (gap < 15) {
-        std::cout << COLOR_RED;
-    } else if (gap < 25) {
-        std::cout << COLOR_GREEN;
+    double target_gap = my_index * 20.0;  // Target: 20m per index
+    double gap_error = std::abs(gap - target_gap);
+    
+    // Color based on how close we are to target gap
+    // Green: within 10m of target, Yellow: within 20m, Red: too far or too close
+    if (gap_error < 10) {
+        std::cout << COLOR_GREEN;   // Good - close to target
+    } else if (gap_error < 20) {
+        std::cout << COLOR_YELLOW;  // Warning - drifting from target
     } else {
-        std::cout << COLOR_YELLOW;
+        std::cout << COLOR_RED;     // Danger - too far from target
     }
     std::cout << std::setw(6) << gap << " m " << COLOR_RESET;
     
@@ -171,11 +179,6 @@ void updateFollowerDashboard() {
     }
     std::cout << "      ║\n";
     
-    std::cout << "║  " << COLOR_CYAN << "Seq #:" << COLOR_RESET << " " << std::setw(8) << last_leader_seq;
-    std::cout << "                                           ║\n";
-    
-    std::cout << "╠══════════════════════════════════════════════════════════════╣\n";
-    std::cout << "║  " << COLOR_CYAN << "LAST EVENT:" << COLOR_RESET << "                                                 ║\n";
     std::cout << "╚══════════════════════════════════════════════════════════════╝\n";
     std::cout << std::flush;
 }
@@ -229,8 +232,8 @@ bool request_join(const char* leader_ip, const char* vehicle_id) {
             my_index = resp.assigned_index;
             strncpy(my_vehicle_id, vehicle_id, sizeof(my_vehicle_id) - 1);
             
-            // Initialize gap based on index (20m per position)
-            distance_to_leader = my_index * 20.0;
+            // Keep user's initial gap (don't overwrite)
+            // my_position will be initialized when first leader state is received
             
             log("TCP", "✅ JOIN ACCEPTED");
             log("TCP", "   ├─ Assigned Index: #" + std::to_string(my_index));
@@ -239,6 +242,73 @@ bool request_join(const char* leader_ip, const char* vehicle_id) {
             return true;
         } else {
             log("TCP", "❌ JOIN REJECTED: " + std::string(resp.message));
+            return false;
+        }
+    }
+    
+    log("TCP", "❌ Invalid response from leader");
+    return false;
+}
+
+// ============== TCP: LEAVE REQUEST ==============
+bool request_leave(uint8_t reason = 0) {
+    if (!joined.load()) {
+        log("TCP", "❌ Not in platoon, cannot leave");
+        return false;
+    }
+    
+    const char* reason_str = "normal";
+    if (reason == 1) reason_str = "emergency";
+    else if (reason == 2) reason_str = "maintenance";
+    
+    log("TCP", "Sending LEAVE_REQUEST (reason: " + std::string(reason_str) + ")");
+    
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        log("TCP", "❌ Failed to create socket");
+        return false;
+    }
+    
+    sockaddr_in serv_addr{};
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(TCP_PORT);
+    
+    if (inet_pton(AF_INET, g_leader_ip.c_str(), &serv_addr.sin_addr) <= 0) {
+        log("TCP", "❌ Invalid IP address");
+        close(sock);
+        return false;
+    }
+    
+    if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+        log("TCP", "❌ Connection failed - Is leader running?");
+        close(sock);
+        return false;
+    }
+    
+    // Send LEAVE request
+    LeaveRequest req{};
+    req.type = static_cast<uint8_t>(MsgType::LEAVE_REQUEST);
+    req.vehicle_index = my_index;
+    strncpy(req.vehicle_id, my_vehicle_id, sizeof(req.vehicle_id) - 1);
+    req.reason = reason;
+    
+    send(sock, &req, sizeof(req), 0);
+    log("TCP", "📤 Sent LEAVE_REQUEST");
+    
+    // Receive response
+    LeaveResponse resp{};
+    ssize_t n = read(sock, &resp, sizeof(resp));
+    
+    close(sock);
+    
+    if (n == sizeof(resp) && resp.type == static_cast<uint8_t>(MsgType::LEAVE_RESPONSE)) {
+        if (resp.success) {
+            log("TCP", "✅ LEAVE ACCEPTED: " + std::string(resp.message));
+            joined.store(false);
+            running.store(false);  // Stop all threads
+            return true;
+        } else {
+            log("TCP", "❌ LEAVE FAILED: " + std::string(resp.message));
             return false;
         }
     }
@@ -293,7 +363,14 @@ void udp_receive_leader_state() {
             leader_brake = msg.brake_active != 0;
             leader_emergency = msg.emergency != 0;
             
-            // Simple following logic: adjust own speed
+            // Initialize my_position on first leader state received
+            // This places us at the correct distance behind the leader
+            if (!position_initialized.load()) {
+                my_position = leader_position - distance_to_leader;
+                position_initialized.store(true);
+            }
+            
+            // Calculate actual gap
             distance_to_leader = leader_position - my_position;
             
             // Target gap based on position in platoon (20m per index)
@@ -347,9 +424,9 @@ void udp_send_follower_state() {
     sockaddr_in leader_addr{};
     leader_addr.sin_family = AF_INET;
     leader_addr.sin_port = htons(UDP_FOLLOWER_PORT);
-    leader_addr.sin_addr.s_addr = inet_addr(g_leader_ip);
+    leader_addr.sin_addr.s_addr = inet_addr(g_leader_ip.c_str());
     
-    log("UDP-TX", "✅ Sending state to leader (" + std::string(g_leader_ip) + ":" + std::to_string(UDP_FOLLOWER_PORT) + ")");
+    log("UDP-TX", "✅ Sending state to leader (" + g_leader_ip + ":" + std::to_string(UDP_FOLLOWER_PORT) + ")");
 
     while (running.load()) {
         if (!joined.load()) {
@@ -380,25 +457,173 @@ void udp_send_follower_state() {
     close(sock);
 }
 
-// ============== MAIN ==============
-int main(int argc, char* argv[]) {
-    // Parse arguments
-    const char* leader_ip = "127.0.0.1";
-    const char* vehicle_id = "Follower_01";
+// ============== TERMINAL INPUT HANDLER ==============
+void printHelp() {
+    std::cout << "\n" << COLOR_CYAN << "Available commands:" << COLOR_RESET << "\n";
+    std::cout << "  leave [reason]  - Leave platoon (reason: 0=normal, 1=emergency, 2=maintenance)\n";
+    std::cout << "  status          - Show current status\n";
+    std::cout << "  help            - Show this help\n";
+    std::cout << "  quit            - Exit program\n";
+    std::cout << std::endl;
+}
+
+void terminal_input_handler() {
+    // Wait for join to complete
+    while (!joined.load() && running.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
     
-    if (argc >= 2) vehicle_id = argv[1];
-    if (argc >= 3) leader_ip = argv[2];
+    // Wait for dashboard to initialize
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    
+    std::string line;
+    while (running.load()) {
+        // Show prompt
+        {
+            std::lock_guard<std::mutex> lock(log_mtx);
+            if (dashboard_mode) {
+                std::cout << MOVE_TO(input_line, 1) << CLEAR_LINE;
+                std::cout << COLOR_GREEN << "Command> " << COLOR_RESET << std::flush;
+            }
+        }
+        
+        // Read command (blocking)
+        if (!std::getline(std::cin, line)) {
+            break;  // EOF or error
+        }
+        
+        // Skip empty lines
+        if (line.empty()) continue;
+        
+        // Parse command
+        std::istringstream iss(line);
+        std::string cmd;
+        iss >> cmd;
+        
+        if (cmd == "leave" || cmd == "l") {
+            int reason = 0;
+            iss >> reason;  // Optional reason
+            
+            logEvent("🚪 Leaving platoon...");
+            
+            // Disable dashboard for clean output
+            dashboard_mode = false;
+            std::cout << CLEAR_SCREEN << std::flush;
+            
+            if (request_leave(static_cast<uint8_t>(reason))) {
+                log("MAIN", "👋 Left platoon successfully. Exiting...");
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                break;
+            } else {
+                log("MAIN", "Failed to leave platoon");
+                // Re-enable dashboard
+                std::cout << CLEAR_SCREEN << std::flush;
+                dashboard_mode = true;
+            }
+            
+        } else if (cmd == "status" || cmd == "s") {
+            std::lock_guard<std::mutex> lock(log_mtx);
+            std::cout << MOVE_TO(input_line + 1, 1) << CLEAR_LINE;
+            std::cout << "Index: #" << my_index 
+                      << ", Speed: " << my_speed << " km/h"
+                      << ", Gap: " << distance_to_leader << " m\n";
+                      
+        } else if (cmd == "help" || cmd == "h" || cmd == "?") {
+            dashboard_mode = false;
+            std::cout << CLEAR_SCREEN;
+            printHelp();
+            std::cout << "Press Enter to continue...";
+            std::getline(std::cin, line);
+            std::cout << CLEAR_SCREEN << std::flush;
+            dashboard_mode = true;
+            
+        } else if (cmd == "quit" || cmd == "q" || cmd == "exit") {
+            logEvent("Exiting without leaving platoon...");
+            running.store(false);
+            break;
+            
+        } else {
+            logEvent("Unknown command: " + cmd + " (type 'help')");
+        }
+    }
+}
+
+// ============== MAIN ==============
+
+std::string generateFollowerId() {
+    // Use process ID to generate unique follower ID
+    // This ensures each follower process gets a unique ID
+    pid_t pid = getpid();
+    int id_num = pid % 100;  // Last 2 digits of PID
+    std::ostringstream oss;
+    oss << "Follower_" << std::setfill('0') << std::setw(2) << id_num;
+    return oss.str();
+}
+
+void printUsage(const char* prog) {
+    std::cout << "Usage: " << prog << " [options]\n";
+    std::cout << "Options:\n";
+    std::cout << "  --name <id>       Vehicle ID (default: auto-generated)\n";
+    std::cout << "  --leadip <ip>     Leader IP address (default: 127.0.0.1)\n";
+    std::cout << "  --speed <km/h>    Initial speed (default: 60)\n";
+    std::cout << "  --gap <m>         Initial distance to leader (default: 50)\n";
+    std::cout << "  --help            Show this help\n";
+    std::cout << "\nExample:\n";
+    std::cout << "  " << prog << " --name TRUCK_01 --speed 80 --gap 30\n";
+}
+
+int main(int argc, char* argv[]) {
+    // Default values
+    std::string leader_ip = "127.0.0.1";
+    std::string vehicle_id_str;
+    double initial_speed = 60.0;      // km/h
+    double initial_gap = 50.0;        // m
+    
+    // Parse named arguments
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        
+        if (arg == "--help" || arg == "-h") {
+            printUsage(argv[0]);
+            return 0;
+        } else if (arg == "--name" && i + 1 < argc) {
+            vehicle_id_str = argv[++i];
+        } else if (arg == "--leadip" && i + 1 < argc) {
+            leader_ip = argv[++i];
+        } else if (arg == "--speed" && i + 1 < argc) {
+            initial_speed = std::atof(argv[++i]);
+        } else if (arg == "--gap" && i + 1 < argc) {
+            initial_gap = std::atof(argv[++i]);
+        } else {
+            std::cerr << "Unknown option: " << arg << "\n";
+            printUsage(argv[0]);
+            return 1;
+        }
+    }
+    
+    // Generate vehicle ID if not provided
+    if (vehicle_id_str.empty()) {
+        vehicle_id_str = generateFollowerId();
+    }
+    
+    // Set initial values to global state
+    my_speed = initial_speed;
+    distance_to_leader = initial_gap;
+    
+    const char* vehicle_id = vehicle_id_str.c_str();
     
     // Set global leader IP for UDP thread
     g_leader_ip = leader_ip;
     
     logSeparator("FOLLOWER TRUCK STARTING");
-    log("MAIN", "Vehicle ID: " + std::string(vehicle_id));
-    log("MAIN", "Leader IP: " + std::string(leader_ip));
+    log("MAIN", "Vehicle ID: " + vehicle_id_str);
+    log("MAIN", "Leader IP: " + g_leader_ip);
+    log("MAIN", "Initial Speed: " + std::to_string((int)initial_speed) + " km/h");
+    log("MAIN", "Initial Gap: " + std::to_string((int)initial_gap) + " m");
     logSeparator("");
     
     // Step 1: Join platoon via TCP
-    if (!request_join(leader_ip, vehicle_id)) {
+    if (!request_join(g_leader_ip.c_str(), vehicle_id)) {
         log("MAIN", "❌ Failed to join platoon. Exiting.");
         return 1;
     }
@@ -416,9 +641,20 @@ int main(int argc, char* argv[]) {
     // Step 2: Start UDP threads
     std::thread rx_thread(udp_receive_leader_state);
     std::thread tx_thread(udp_send_follower_state);
+    std::thread input_thread(terminal_input_handler);
     
-    rx_thread.join();
-    tx_thread.join();
+    // Wait for input handler to finish (user quit or leave)
+    input_thread.join();
+    
+    // Signal other threads to stop
+    running.store(false);
+    
+    // Note: rx_thread may block on recvfrom, will exit when socket closes
+    // For clean shutdown, we'd need to use non-blocking sockets or select()
+    rx_thread.detach();
+    tx_thread.detach();
+    
+    log("MAIN", "Goodbye! 👋");
     
     return 0;
 }

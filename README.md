@@ -6,7 +6,7 @@ A truck platooning system using hybrid TCP/UDP protocol.
 
 ```
 ┌─────────────┐    TCP (8080)     ┌─────────────┐
-│   LEADER    │◄─────JOIN────────►│  FOLLOWER   │
+│   LEADER    │◄───JOIN/LEAVE────►│  FOLLOWER   │
 │  (lead.cpp) │                   │ (follow.cpp)│
 │             │    UDP (9000)     │             │
 │             │────BROADCAST─────►│             │
@@ -15,7 +15,7 @@ A truck platooning system using hybrid TCP/UDP protocol.
 └─────────────┘                   └─────────────┘
 ```
 
-- **TCP (port 8080)**: Join platoon (reliable)
+- **TCP (port 8080)**: Join/Leave platoon (reliable)
 - **UDP (port 9000)**: Leader broadcasts state (10Hz) - realtime
 - **UDP (port 9001)**: Follower sends state to leader (2Hz)
 
@@ -25,6 +25,8 @@ A truck platooning system using hybrid TCP/UDP protocol.
 |-------------|----------|-------------|
 | `JoinRequest` | TCP | Follower requests to join platoon |
 | `JoinResponse` | TCP | Leader confirms, assigns position |
+| `LeaveRequest` | TCP | Follower requests to leave platoon |
+| `LeaveResponse` | TCP | Leader confirms removal |
 | `LeaderState` | UDP | Speed, position, brake, emergency |
 | `FollowerState` | UDP | Speed, position, gap to leader |
 
@@ -42,55 +44,90 @@ g++ -std=c++17 follow.cpp -o follow -pthread
 ./lead
 ```
 
-### Terminal 2 - Follower
+### Terminal 2+ - Follower
 ```bash
-./follow                      # Default: Follower_01, leader at 127.0.0.1
-./follow Truck_02             # Set vehicle name
-./follow Truck_02 192.168.1.5 # Set vehicle name and leader IP
+./follow [options]
+
+Options:
+  --name <id>       Vehicle ID (default: auto-generated Follower_XX)
+  --leadip <ip>     Leader IP address (default: 127.0.0.1)
+  --speed <km/h>    Initial speed (default: 60)
+  --gap <m>         Initial distance to leader (default: 50)
+  --help            Show help
 ```
 
-## Sample Logs
+#### Examples
+```bash
+# Default (auto ID, 60 km/h, 50m gap)
+./follow
 
-### Leader
-```
-══════════ LEADER TRUCK STARTING ══════════
-[10:30:15.123] [MAIN] Initializing platooning leader...
-[10:30:15.124] [TCP] ✅ Listening on port 8080 for JOIN requests
-[10:30:15.125] [UDP-TX] ✅ Broadcasting on port 9000
-[10:30:15.126] [UDP-RX] ✅ Listening on port 9001 for follower states
-────────────────────────────────────────────────
-[10:30:20.456] [TCP] ✅ JOIN ACCEPTED
-[10:30:20.456] [TCP]    ├─ Vehicle ID : Truck_02
-[10:30:20.456] [TCP]    ├─ From IP    : 127.0.0.1
-[10:30:20.456] [TCP]    ├─ Position # : 1
-[10:30:20.456] [TCP]    └─ Total followers: 1
-[10:30:21.000] [UDP-TX] 📡 BROADCAST #10 | Speed: 80.0 km/h | Pos: 22.2 m | Brake: OFF
-[10:30:21.500] [UDP-RX] 📥 FROM [Truck_02] #1 | Speed: 78.5 km/h | Gap: 20.1 m | Status: OK
+# Custom name only
+./follow --name TRUCK_01
+
+# Full configuration
+./follow --name TRUCK_01 --leadip 192.168.1.100 --speed 80 --gap 30
+
+# Any order works
+./follow --gap 25 --speed 75 --name MyTruck
 ```
 
-### Follower
+## Interactive Commands (Follower)
+
+While follower is running, you can type commands:
+
+| Command | Description |
+|---------|-------------|
+| `leave` or `l` | Leave platoon (normal) |
+| `leave 1` | Leave platoon (emergency) |
+| `leave 2` | Leave platoon (maintenance) |
+| `status` or `s` | Show current status |
+| `help` or `h` | Show available commands |
+| `quit` or `q` | Exit program |
+
+## Sample Session
+
+### Leader Dashboard
 ```
-══════════ FOLLOWER TRUCK STARTING ══════════
-[10:30:20.100] [MAIN] Vehicle ID: Truck_02
-[10:30:20.100] [MAIN] Leader IP: 127.0.0.1
-────────────────────────────────────────────────
-[10:30:20.450] [TCP] ✅ Connected to leader
-[10:30:20.451] [TCP] 📤 Sent JOIN_REQUEST
-[10:30:20.455] [TCP] ✅ JOIN ACCEPTED
-[10:30:20.455] [TCP]    ├─ Assigned Index: #1
-[10:30:20.455] [TCP]    └─ Message: Welcome to platoon, position #1
-══════════ JOINED PLATOON ══════════
-[10:30:21.000] [UDP-RX] 📥 LEADER #10 | L.Speed: 80.0 km/h | Gap: 22.2 m | My Speed: 81.1 km/h
-[10:30:23.500] [UDP-TX] 📤 SENT #5 | Speed: 79.5 km/h | Pos: 2.2 m | Gap: 20.0 m
+╔══════════════════════════════════════════════════════════════╗
+║            🚛  LEADER TRUCK DASHBOARD  🚛                    ║
+╠══════════════════════════════════════════════════════════════╣
+║  Speed:   80.0 km/h  │  Position:   1234.5 m                 ║
+║  Brake:  OFF         │  Emergency:   NO                      ║
+╠══════════════════════════════════════════════════════════════╣
+║  FOLLOWERS (2)                                               ║
+╠══════════════════════════════════════════════════════════════╣
+║  #1 [TRUCK_01     ] Spd: 79.5 km/h  Gap: 20.0 m              ║
+║  #2 [TRUCK_02     ] Spd: 78.8 km/h  Gap: 40.5 m              ║
+╚══════════════════════════════════════════════════════════════╝
+```
+
+### Follower Dashboard
+```
+╔══════════════════════════════════════════════════════════════╗
+║            🚚  FOLLOWER TRUCK DASHBOARD  🚚                  ║
+║  ID: TRUCK_01         Index: #1                              ║
+╠══════════════════════════════════════════════════════════════╣
+║  My Speed:  79.5 km/h  │  Position:  1214.5 m                ║
+║  Gap to Leader:  20.0 m [──────────█─────────]               ║
+╠══════════════════════════════════════════════════════════════╣
+║  LEADER STATE                                                ║
+╠══════════════════════════════════════════════════════════════╣
+║  Leader Speed:  80.0 km/h  │  Brake: OFF  │  Emerg:  NO      ║
+╚══════════════════════════════════════════════════════════════╝
+
+Command> leave
+🚪 Leaving platoon...
+✅ LEAVE ACCEPTED: Goodbye, removed from platoon
+👋 Left platoon successfully. Exiting...
 ```
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| `message.h` | Message structure definitions |
-| `lead.h` | Leader class header |
+| `message.h` | Message structure definitions (all protocols) |
+| `lead.h` | Leader constants and declarations |
 | `lead.cpp` | Leader truck implementation |
-| `follow.h` | Follower class header |
+| `follow.h` | Follower constants and declarations |
 | `follow.cpp` | Follower truck implementation |
 | `ARCHITECTURE.md` | Detailed architecture documentation |
