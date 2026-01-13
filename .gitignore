@@ -23,6 +23,8 @@ Makefile.user
 *.out
 a.out
 *.elf
+follow
+lead
 
 # Debug, logs, coverage
 *.log

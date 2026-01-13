@@ -1,13 +1,11 @@
 /**
  * @file follow.h
- *
- * @brief Following vehicle (platoon follower) simulation.
- *
- * Changes vs. original version:
- *  - Uses pthreads + mutex (no OpenMP for sockets)
- *  - Uses fixed-size WireMessage for UDP communication
- *  - Adds Cut-in simulation: temporarily pause heartbeat to emulate partition
- *  - Safe mode when connection is lost; optional reconnect
+ * @brief Follower Truck - Platoon member header
+ * 
+ * Functions:
+ *   - TCP client: Send join request to leader
+ *   - UDP receiver: Receive state from leader
+ *   - UDP sender: Send state to leader
  */
 
 #ifndef FOLLOW_H
@@ -15,88 +13,52 @@
 
 #include "message.h"
 
+#include <string>
+#include <mutex>
 #include <atomic>
 #include <cstdint>
-#include <string>
 
-#include <arpa/inet.h>
-#include <pthread.h>
+// ============== CONSTANTS ==============
+constexpr int HEARTBEAT_INTERVAL_MS = 500;  // 2 Hz
+constexpr double TARGET_GAP_M = 20.0;       // Target gap to leader (m)
+constexpr double MAX_SPEED_KMH = 120.0;     // Maximum speed (km/h)
 
-static constexpr int PORT = 8080;
+// ============== FUNCTION DECLARATIONS ==============
 
-class FollowingVehicle {
-public:
-    FollowingVehicle(int id,
-                     double initialSpeed,
-                     double initialPosition,
-                     double targetDistance,
-                     double Kp,
-                     double Ki,
-                     double Kd);
+/**
+ * @brief Get current timestamp in milliseconds
+ */
+uint64_t nowMs();
 
-    ~FollowingVehicle();
+/**
+ * @brief Get formatted timestamp string for logging
+ */
+std::string getTimestamp();
 
-    void connectToLeader(const std::string& ipAddress);
-    void run();
-    void stop();
+/**
+ * @brief Log a message with timestamp and component tag
+ */
+void log(const std::string& component, const std::string& msg);
 
-private:
-    int id_;
-    int selfIndex_{-1};
-    std::string leaderIp_;
-    sockaddr_in leaderAddr_{};
+/**
+ * @brief Print a separator line in the log
+ */
+void logSeparator(const std::string& title);
 
-    double position_;
-    double speed_;
-    int socketFd_;
+/**
+ * @brief Request to join the platoon via TCP
+ * @return true if join was successful
+ */
+bool request_join(const char* leader_ip, const char* vehicle_id);
 
-    // Controller
-    double targetDistance_;
-    double Kp_;
-    double Ki_;
-    double Kd_;
-    double integralError_;
-    double previousError_;
+/**
+ * @brief UDP receiver thread - receives leader state broadcasts
+ */
+void udp_receive_leader_state();
 
-    // Flags
-    std::atomic<bool> running_;
-    std::atomic<bool> connected_;
-    std::atomic<bool> obstacleDetected_;
-    std::atomic<bool> cutInActive_;
-
-    // Logical clock
-    std::int32_t clock_[MAX_NODES][MAX_NODES]{};
-
-    // Concurrency
-    pthread_mutex_t stateMutex_;
-    pthread_t recvThread_{};
-    pthread_t sendThread_{};
-    pthread_t inputThread_{};
-
-    // Threads
-    static void* recvThreadEntry(void* arg);
-    static void* sendThreadEntry(void* arg);
-    static void* inputThreadEntry(void* arg);
-
-    void recvLoop();
-    void sendLoop();
-    void inputLoop();
-
-    // Helpers
-    void initClock();
-    void mergeClockElementwiseMax(const std::int32_t other[MAX_NODES][MAX_NODES]);
-    void onClockReceive(int senderIdx, const std::int32_t other[MAX_NODES][MAX_NODES]);
-    void onClockLocalEvent();
-    void printClock();
-    void printDashboard(double leaderPos, double leaderSpeed, bool degraded);
-
-    void updateControl(double leaderPos, double leaderSpeed, bool leaderObstacle, bool degraded);
-
-    bool sendMsgToLeader(const void* data, size_t len);
-    bool recvMsgFromLeader(void* data, size_t len, sockaddr_in* from);
-
-    static std::int64_t nowMs();
-    bool tryReconnect();
-};
+/**
+ * @brief UDP sender thread - sends follower state to leader at 2Hz
+ */
+void udp_send_follower_state();
 
 #endif // FOLLOW_H

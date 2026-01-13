@@ -1,14 +1,11 @@
 /**
  * @file lead.h
- *
- * @brief Leading vehicle (platoon leader) simulation.
- *
- * Changes vs. original version:
- *  - Uses pthreads + mutex for concurrency (no OpenMP for sockets)
- *  - Uses fixed-size WireMessage (no std::vector in messages)
- *  - Uses UDP for communication
- *  - Adds heartbeat-based node failure detection and degraded-mode handling
- *  - Logical matrix clock maintained and merged on receive
+ * @brief Leader Truck - Platoon controller header
+ * 
+ * Functions:
+ *   - TCP server: Accept join requests from followers
+ *   - UDP broadcast: Send control state to followers
+ *   - UDP receiver: Receive state from followers
  */
 
 #ifndef LEAD_H
@@ -16,86 +13,50 @@
 
 #include "message.h"
 
-#include <atomic>
-#include <cstdint>
-#include <map>
 #include <string>
 #include <vector>
+#include <mutex>
+#include <cstdint>
 
-#include <arpa/inet.h>
-#include <pthread.h>
+// ============== CONSTANTS ==============
+constexpr int BROADCAST_INTERVAL_MS = 100;  // 10 Hz
+constexpr int LOG_INTERVAL = 10;            // Log every N broadcasts
 
-static constexpr int PORT = 8080;
+// ============== FUNCTION DECLARATIONS ==============
 
-struct FollowerInfo {
-    sockaddr_in addr{};       // follower IP:port for UDP
-    int followerId{};
-    int clockIndex{}; // 1..MAX_NODES-1
-    double position{};
-    double speed{};
-    std::int64_t lastSeenMs{}; // monotonic ms timestamp
-};
+/**
+ * @brief Get current timestamp in milliseconds
+ */
+uint64_t nowMs();
 
-class LeadingVehicle {
-public:
-    LeadingVehicle(int id, double initialPosition, double initialSpeed);
-    ~LeadingVehicle();
+/**
+ * @brief Get formatted timestamp string for logging
+ */
+std::string getTimestamp();
 
-    void startServer();
-    void stopServer();
+/**
+ * @brief Log a message with timestamp and component tag
+ */
+void log(const std::string& component, const std::string& msg);
 
-private:
-    // Core state
-    int id_;
-    double position_;
-    double baseSpeed_;
-    double currentSpeed_;
-    bool obstacleDetected_;
+/**
+ * @brief Print a separator line in the log
+ */
+void logSeparator(const std::string& title);
 
-    int serverSocket_;
+/**
+ * @brief TCP management server thread - handles JOIN requests
+ */
+void tcp_management_server();
 
-    // Clock matrix and follower registry
-    std::int32_t clock_[MAX_NODES][MAX_NODES]{};
-    std::map<std::string, FollowerInfo> followers_; // key: "ip:port"
-    std::map<int, int> idToClockIndex_;      // followerId -> index
-    std::vector<int> freeClockIndices_;
+/**
+ * @brief UDP broadcast server thread - broadcasts leader state at 10Hz
+ */
+void udp_broadcast_server();
 
-    // Concurrency
-    pthread_mutex_t mutex_;
-    std::atomic<bool> running_;
-
-    pthread_t recvThread_{};
-    pthread_t broadcastThread_{};
-    pthread_t monitorThread_{};
-
-    // Helpers
-    void createServerSocket();
-    void initClock();
-    void printClock();
-    void printDashboard();
-    void mergeClockElementwiseMax(const std::int32_t other[MAX_NODES][MAX_NODES]);
-    void onClockReceive(int selfIdx, int senderIdx, const std::int32_t other[MAX_NODES][MAX_NODES]);
-    void onClockLocalEvent(int selfIdx);
-
-    // Threads
-    static void* recvThreadEntry(void* arg);
-    static void* broadcastThreadEntry(void* arg);
-    static void* monitorThreadEntry(void* arg);
-
-    void recvLoop();
-    void broadcastLoop();
-    void monitorLoop();
-
-    // Messaging
-    bool sendToFollower(const sockaddr_in& addr, const void* data, size_t len);
-    WireMessage makeLeaderStateMessage(std::uint8_t flags);
-
-    // Timing
-    static std::int64_t nowMs();
-    static std::string addrKey(const sockaddr_in& addr);
-
-    // Cleanup
-    void removeFollowerLocked(const std::string& key, const char* reason);
-};
+/**
+ * @brief UDP receiver thread - receives state updates from followers
+ */
+void udp_receive_follower_state();
 
 #endif // LEAD_H

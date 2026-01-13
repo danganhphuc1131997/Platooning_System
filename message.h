@@ -1,47 +1,97 @@
-// message.h - shared wire protocol for leader/follower communication
-//
-// Goals:
-//  - Safe over UDP: fixed-size POD struct (no std::vector)
-//  - Implements a logical matrix clock pattern (fixed MAX_NODES)
-//  - Supports: join, leave, leader state, follower state (heartbeat), and degraded mode.
+/**
+ * @file message.h
+ * @brief Message structures for Leader-Follower communication
+ * 
+ * Protocol:
+ *   - TCP (port 8080): JOIN request/response (reliable)
+ *   - UDP (port 9000): Leader broadcasts state
+ *   - UDP (port 9001): Follower sends state to Leader
+ */
 
-#ifndef PLATOON_MESSAGE_H
-#define PLATOON_MESSAGE_H
+#ifndef MESSAGE_H
+#define MESSAGE_H
 
 #include <cstdint>
+#include <cstring>
 
-// Adjust if you want to support more nodes in the same platoon.
-// Leader uses index 0. Followers are assigned indices 1..MAX_NODES-1 on join.
-static constexpr int MAX_NODES = 6;
+// ============== PORTS ==============
+constexpr int TCP_PORT = 8080;          // TCP: Join/Leave
+constexpr int UDP_LEADER_PORT = 9000;   // UDP: Leader -> Followers
+constexpr int UDP_FOLLOWER_PORT = 9001; // UDP: Followers -> Leader
 
-enum class MsgType : std::uint8_t {
-    JOIN = 1,
-    JOIN_ACK = 2,
-    LEAVE = 3,
-    LEADER_STATE = 4,
-    FOLLOWER_STATE = 5
+// ============== MESSAGE TYPES ==============
+enum class MsgType : uint8_t {
+    // TCP Messages (Join Phase)
+    JOIN_REQUEST  = 1,
+    JOIN_RESPONSE = 2,
+    LEAVE_REQUEST = 3,
+    
+    // UDP Messages (Data Phase)
+    LEADER_STATE   = 10,   // Leader broadcasts state
+    FOLLOWER_STATE = 11,   // Follower sends state to Leader
 };
 
-// Flags bitfield
-static constexpr std::uint8_t FLAG_CONNECTED = 1u << 0;
-static constexpr std::uint8_t FLAG_DEGRADED  = 1u << 1;
-
-// NOTE: Packed wire message. Keep it POD.
+// ============== JOIN MESSAGES (TCP) ==============
 #pragma pack(push, 1)
-struct WireMessage {
-    std::uint8_t  type;          // MsgType
-    std::int32_t  senderId;      // application-level node id (e.g., vehicle id)
-    std::int32_t  senderIndex;   // matrix-clock index of sender (0..MAX_NODES-1), or -1 if unknown (JOIN)
-    std::int32_t  assignedIndex; // used in JOIN_ACK: the index assigned by the leader; otherwise -1
+struct JoinRequest {
+    uint8_t  type;           // MsgType::JOIN_REQUEST
+    char     vehicle_id[32]; // Follower vehicle ID
+    double   position;       // Current position (m)
+    double   speed;          // Current speed (km/h)
+};
 
-    double        position;
-    double        speed;
-    std::uint8_t  obstacle;      // 0/1
-    std::uint8_t  flags;         // FLAG_* bitfield
-    std::int32_t  clock[MAX_NODES][MAX_NODES];
+struct JoinResponse {
+    uint8_t  type;           // MsgType::JOIN_RESPONSE
+    uint8_t  accepted;       // 1 = accepted, 0 = rejected
+    int32_t  assigned_index; // Position in platoon (1, 2, 3...)
+    char     message[64];    // Response message
+};
+
+// ============== LEADER STATE (UDP) ==============
+struct LeaderState {
+    uint8_t  type;           // MsgType::LEADER_STATE
+    uint32_t sequence;       // Message sequence number (for packet loss detection)
+    uint64_t timestamp_ms;   // Send timestamp (milliseconds)
+    
+    // Control data
+    double   speed;          // Speed (km/h)
+    double   acceleration;   // Acceleration (m/s²)
+    double   position;       // Position (m)
+    
+    // Status flags
+    uint8_t  brake_active;   // 0 = off, 1 = on
+    uint8_t  emergency;      // 0 = normal, 1 = emergency
+};
+
+// ============== FOLLOWER STATE (UDP) ==============
+struct FollowerState {
+    uint8_t  type;           // MsgType::FOLLOWER_STATE
+    uint32_t sequence;       // Message sequence number
+    uint64_t timestamp_ms;   // Send timestamp
+    
+    int32_t  vehicle_index;  // Position in platoon
+    char     vehicle_id[32]; // Vehicle ID
+    
+    // State data
+    double   speed;          // Speed (km/h)
+    double   position;       // Position (m)
+    double   distance_to_leader; // Gap to leader (m)
+    
+    // Status
+    uint8_t  status;         // 0 = OK, 1 = warning, 2 = error
 };
 #pragma pack(pop)
 
-static_assert(sizeof(WireMessage) > 0, "WireMessage must have size");
+// ============== HELPER FUNCTIONS ==============
+inline const char* msgTypeToString(MsgType t) {
+    switch (t) {
+        case MsgType::JOIN_REQUEST:   return "JOIN_REQUEST";
+        case MsgType::JOIN_RESPONSE:  return "JOIN_RESPONSE";
+        case MsgType::LEAVE_REQUEST:  return "LEAVE_REQUEST";
+        case MsgType::LEADER_STATE:   return "LEADER_STATE";
+        case MsgType::FOLLOWER_STATE: return "FOLLOWER_STATE";
+        default: return "UNKNOWN";
+    }
+}
 
-#endif // PLATOON_MESSAGE_H
+#endif // MESSAGE_H
