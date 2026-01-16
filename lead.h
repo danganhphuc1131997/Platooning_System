@@ -6,9 +6,9 @@
  * Changes vs. original version:
  *  - Uses pthreads + mutex for concurrency (no OpenMP for sockets)
  *  - Uses fixed-size WireMessage (no std::vector in messages)
- *  - Uses UDP for communication
  *  - Adds heartbeat-based node failure detection and degraded-mode handling
  *  - Logical matrix clock maintained and merged on receive
+ *  - Adds traffic light use-case: leader detects light and broadcasts RED/GREEN + stop line
  */
 
 #ifndef LEAD_H
@@ -28,9 +28,9 @@
 static constexpr int PORT = 8080;
 
 struct FollowerInfo {
-    sockaddr_in addr{};       // follower IP:port for UDP
+    int socketFd{};
     int followerId{};
-    int clockIndex{}; // 1..MAX_NODES-1
+    int clockIndex{}; // 1..MAX_VEHICLES-1
     double position{};
     double speed{};
     std::int64_t lastSeenMs{}; // monotonic ms timestamp
@@ -54,17 +54,22 @@ private:
 
     int serverSocket_;
 
+    // Traffic light simulation (use case)
+    std::uint8_t trafficLight_;     // TrafficLight
+    double stopLinePos_;            // fixed stop line position
+    std::int64_t lightPhaseStartMs_;
+    bool lightActive_;              // enabled once leader "detects" light
+
     // Clock matrix and follower registry
-    std::int32_t clock_[MAX_NODES][MAX_NODES]{};
-    std::map<std::string, FollowerInfo> followers_; // key: "ip:port"
-    std::map<int, int> idToClockIndex_;      // followerId -> index
-    std::vector<int> freeClockIndices_;
+    std::int32_t clock_[MAX_VEHICLES][MAX_VEHICLES];
+    std::map<int, FollowerInfo> followers_; // key: socket fd
+    std::map<int, int> vehicleIndex;        // vehicleId -> matrix index
 
     // Concurrency
     pthread_mutex_t mutex_;
     std::atomic<bool> running_;
 
-    pthread_t recvThread_{};
+    pthread_t acceptThread_{};
     pthread_t broadcastThread_{};
     pthread_t monitorThread_{};
 
@@ -72,30 +77,34 @@ private:
     void createServerSocket();
     void initClock();
     void printClock();
-    void printDashboard();
-    void mergeClockElementwiseMax(const std::int32_t other[MAX_NODES][MAX_NODES]);
-    void onClockReceive(int selfIdx, int senderIdx, const std::int32_t other[MAX_NODES][MAX_NODES]);
+    void mergeClockElementwiseMax(const std::int32_t other[MAX_VEHICLES][MAX_VEHICLES]);
+    void onClockReceive(int selfIdx, int senderIdx, const std::int32_t other[MAX_VEHICLES][MAX_VEHICLES]);
     void onClockLocalEvent(int selfIdx);
 
     // Threads
-    static void* recvThreadEntry(void* arg);
+    static void* acceptThreadEntry(void* arg);
     static void* broadcastThreadEntry(void* arg);
     static void* monitorThreadEntry(void* arg);
 
-    void recvLoop();
+    void acceptLoop();
     void broadcastLoop();
     void monitorLoop();
 
+    // Per-follower handler
+    struct HandlerArgs { LeadingVehicle* self; int clientSocket; };
+    static void* followerHandlerEntry(void* arg);
+    void handleFollower(int clientSocket);
+
     // Messaging
-    bool sendToFollower(const sockaddr_in& addr, const void* data, size_t len);
+    bool sendAll(int fd, const void* data, size_t len);
+    bool recvAll(int fd, void* data, size_t len);
     WireMessage makeLeaderStateMessage(std::uint8_t flags);
 
     // Timing
     static std::int64_t nowMs();
-    static std::string addrKey(const sockaddr_in& addr);
 
     // Cleanup
-    void removeFollowerLocked(const std::string& key, const char* reason);
+    void removeFollowerLocked(int clientSocket, const char* reason);
 };
 
 #endif // LEAD_H
