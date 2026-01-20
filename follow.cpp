@@ -3,24 +3,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
-#include <iomanip>
 #include <iostream>
-#include <sstream>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <termios.h>
 #include <thread>
 #include <unistd.h>
-
-// ANSI color codes for terminal output
-#define RESET   "\033[0m"
-#define BOLD    "\033[1m"
-#define RED     "\033[31m"
-#define GREEN   "\033[32m"
-#define YELLOW  "\033[33m"
-#define BLUE    "\033[34m"
-#define CYAN    "\033[36m"
-#define CLEAR   "\033[2J\033[H"
 
 #ifdef USE_OPENCL
 #include <CL/cl.h>
@@ -29,15 +17,10 @@
 
 namespace {
 constexpr std::int64_t HEARTBEAT_PERIOD_MS = 500;
-constexpr std::int64_t RECV_TIMEOUT_MS     = 5000; // for logging (UDP non-blocking)
-constexpr int DISPLAY_UPDATE_INTERVAL = 3; // update dashboard every N receives
 
 #ifdef USE_OPENCL
 // Very small GPU demo (OpenCL):
 // Compute the minimum absolute distance between the ego position and a set of obstacle positions.
-// This is intentionally simple so it can be explained in a report as "GPU offload of a vector loop".
-// Build example:
-//   g++ -DUSE_OPENCL follow.cpp lead.cpp -lpthread -lOpenCL -o platoon
 static bool g_clInitOk = false;
 static cl_context g_ctx = nullptr;
 static cl_command_queue g_q = nullptr;
@@ -55,7 +38,6 @@ static bool initOpenCLOnce() {
     std::vector<cl_platform_id> platforms(numPlatforms);
     if (clGetPlatformIDs(numPlatforms, platforms.data(), nullptr) != CL_SUCCESS) return false;
 
-    // Try GPU first, then CPU as a fallback.
     cl_device_id dev = nullptr;
     for (auto p : platforms) {
         cl_uint numDevices = 0;
@@ -136,6 +118,24 @@ static float gpuMinAbsDistance(const std::vector<float>& obstacles, float egoPos
 
 // Cut-in simulation: pause heartbeat for this long
 constexpr std::int64_t CUTIN_PAUSE_MS = 3000;
+
+// Terminal strings
+static const char* colorMode(FollowerMode m) {
+    switch (m) {
+        case FollowerMode::COUPLED:            return "\033[1;32mCOUPLED\033[0m";
+        case FollowerMode::STOPPING_FOR_LIGHT: return "\033[1;34mSTOPPING\033[0m";
+        case FollowerMode::DECOUPLED:          return "\033[1;35mDECOUPLED\033[0m";
+        case FollowerMode::CATCH_UP:           return "\033[1;33mCATCH_UP\033[0m";
+        default:                               return "UNKNOWN";
+    }
+}
+static const char* colorLight(TrafficLight l) {
+    switch (l) {
+        case TrafficLight::RED:   return "\033[1;31mRED\033[0m";
+        case TrafficLight::GREEN: return "\033[1;32mGREEN\033[0m";
+        default:                  return "NONE";
+    }
+}
 }
 
 // -------- terminal helpers (non-canonical single-key input) ----------
@@ -148,11 +148,9 @@ static void setNonCanonicalMode() {
     newTermios.c_lflag &= ~(ICANON | ECHO);
     tcsetattr(STDIN_FILENO, TCSANOW, &newTermios);
 }
-
 static void restoreTerminalSettings() {
     tcsetattr(STDIN_FILENO, TCSANOW, &g_oldTermios);
 }
-
 static bool isKeyPressed() {
     fd_set set;
     struct timeval timeout{};
@@ -185,7 +183,8 @@ FollowingVehicle::FollowingVehicle(int id,
       running_(false),
       connected_(false),
       obstacleDetected_(false),
-      cutInActive_(false) {
+      cutInActive_(false),
+      mode_(static_cast<std::uint8_t>(FollowerMode::COUPLED)) {
     pthread_mutex_init(&stateMutex_, nullptr);
     initClock();
 }
@@ -197,37 +196,37 @@ FollowingVehicle::~FollowingVehicle() {
 
 std::int64_t FollowingVehicle::nowMs() {
     using namespace std::chrono;
-    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
 }
 
 void FollowingVehicle::initClock() {
     std::memset(clock_, 0, sizeof(clock_));
-    // Once we know our assigned matrix index, we start our local time at 1.
-    if (selfIndex_ >= 0 && selfIndex_ < MAX_NODES) {
+    if (selfIndex_ >= 0 && selfIndex_ < MAX_VEHICLES) {
         clock_[selfIndex_][selfIndex_] = 1;
     }
 }
 
-void FollowingVehicle::mergeClockElementwiseMax(const std::int32_t other[MAX_NODES][MAX_NODES]) {
-    for (int i = 0; i < MAX_NODES; ++i) {
-        for (int j = 0; j < MAX_NODES; ++j) {
+void FollowingVehicle::mergeClockElementwiseMax(const std::int32_t other[MAX_VEHICLES][MAX_VEHICLES]) {
+    for (int i = 0; i < MAX_VEHICLES; ++i) {
+        for (int j = 0; j < MAX_VEHICLES; ++j) {
             if (other[i][j] > clock_[i][j]) clock_[i][j] = other[i][j];
         }
     }
 }
 
-void FollowingVehicle::onClockReceive(int senderIdx, const std::int32_t other[MAX_NODES][MAX_NODES]) {
+void FollowingVehicle::onClockReceive(int senderIdx, const std::int32_t other[MAX_VEHICLES][MAX_VEHICLES]) {
     const int selfIdx = selfIndex_;
-    if (selfIdx < 0 || selfIdx >= MAX_NODES) {
-        // Not yet assigned; do a safe merge.
+    if (selfIdx < 0 || selfIdx >= MAX_VEHICLES) {
         mergeClockElementwiseMax(other);
         return;
     }
 
     mergeClockElementwiseMax(other);
 
-    if (senderIdx >= 0 && senderIdx < MAX_NODES) {
-        for (int j = 0; j < MAX_NODES; ++j) {
+    if (senderIdx >= 0 && senderIdx < MAX_VEHICLES) {
+        for (int j = 0; j < MAX_VEHICLES; ++j) {
             if (other[senderIdx][j] > clock_[selfIdx][j]) clock_[selfIdx][j] = other[senderIdx][j];
         }
 
@@ -241,78 +240,39 @@ void FollowingVehicle::onClockReceive(int senderIdx, const std::int32_t other[MA
 
 void FollowingVehicle::onClockLocalEvent() {
     const int selfIdx = selfIndex_;
-    if (selfIdx < 0 || selfIdx >= MAX_NODES) return;
+    if (selfIdx < 0 || selfIdx >= MAX_VEHICLES) return;
     clock_[selfIdx][selfIdx] += 1;
 }
 
-void FollowingVehicle::printClock() {
-    // Compact clock display - only show our row
-    std::cout << CYAN << "Clock[" << selfIndex_ << "]: [";
-    for (int j = 0; j < MAX_NODES; ++j) {
-        std::cout << clock_[selfIndex_][j] << (j + 1 == MAX_NODES ? "" : ",");
+void FollowingVehicle::printClock(int numVehicles) {
+    std::cout << "Clock Matrix (" << numVehicles << " vehicles):\n";
+    for (int i = 0; i < numVehicles; ++i) {
+        for (int j = 0; j < numVehicles; ++j) {
+            std::cout << clock_[i][j] << (j + 1 == numVehicles ? "" : " ");
+        }
+        std::cout << "\n";
     }
-    std::cout << "]" << RESET << std::endl;
-}
-
-void FollowingVehicle::printDashboard(double leaderPos, double leaderSpeed, bool degraded) {
-    std::cout << CLEAR;  // Clear screen
-    std::cout << BOLD << "╔════════════════════════════════════════════════════════╗" << RESET << std::endl;
-    std::cout << BOLD << "║" << BLUE << "          🚙 FOLLOWER VEHICLE #" << id_ << " DASHBOARD            " << RESET << BOLD << "║" << RESET << std::endl;
-    std::cout << BOLD << "╠════════════════════════════════════════════════════════╣" << RESET << std::endl;
-    
-    // Status
-    std::ostringstream status;
-    if (obstacleDetected_.load()) {
-        status << RED << "⛔ OBSTACLE DETECTED" << RESET;
-    } else if (cutInActive_.load()) {
-        status << YELLOW << "⚠️  CUT-IN SIMULATION (no heartbeat)" << RESET;
-    } else if (!connected_.load()) {
-        status << RED << "✗ DISCONNECTED" << RESET;
-    } else if (degraded) {
-        status << YELLOW << "⚠️  LEADER IN DEGRADED MODE" << RESET;
-    } else {
-        status << GREEN << "✓ FOLLOWING" << RESET;
-    }
-    std::cout << BOLD << "║" << RESET << " Status: " << std::left << std::setw(45) << status.str() << BOLD << "║" << RESET << std::endl;
-    
-    // My Position & Speed
-    std::cout << BOLD << "║" << RESET << " My Position: " << CYAN << std::fixed << std::setprecision(1) << std::setw(8) << position_ << RESET 
-              << " m   Speed: " << CYAN << std::setw(6) << speed_ << RESET << " m/s      " << BOLD << "║" << RESET << std::endl;
-    
-    // Leader info
-    double gap = leaderPos - position_;
-    std::string gapColor = (gap > targetDistance_ - 2 && gap < targetDistance_ + 2) ? GREEN : YELLOW;
-    std::cout << BOLD << "║" << RESET << " Leader Pos:  " << CYAN << std::setprecision(1) << std::setw(8) << leaderPos << RESET 
-              << " m   Speed: " << CYAN << std::setw(6) << leaderSpeed << RESET << " m/s      " << BOLD << "║" << RESET << std::endl;
-    std::cout << BOLD << "║" << RESET << " Gap: " << gapColor << std::setprecision(1) << gap << " m" << RESET 
-              << " (target: " << targetDistance_ << " m)                      " << BOLD << "║" << RESET << std::endl;
-    
-    std::cout << BOLD << "╠════════════════════════════════════════════════════════╣" << RESET << std::endl;
-    printClock();
-    std::cout << BOLD << "╠════════════════════════════════════════════════════════╣" << RESET << std::endl;
-    std::cout << BOLD << "║" << RESET << " Controls: [o]=obstacle  [c]=cut-in  [q]=quit         " << BOLD << "║" << RESET << std::endl;
-    std::cout << BOLD << "╚════════════════════════════════════════════════════════╝" << RESET << std::endl;
 }
 
 void FollowingVehicle::connectToLeader(const std::string& ipAddress) {
     leaderIp_ = ipAddress;
     socketFd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (socketFd_ < 0) {
-        throw std::runtime_error("Follower: failed to create UDP socket");
+        throw std::runtime_error("Follower: failed to create socket");
     }
 
-    // Bind to ephemeral port so leader can reply
-    sockaddr_in localAddr{};
-    localAddr.sin_family = AF_INET;
-    localAddr.sin_addr.s_addr = INADDR_ANY;
-    localAddr.sin_port = 0;
-    if (::bind(socketFd_, reinterpret_cast<sockaddr*>(&localAddr), sizeof(localAddr)) < 0) {
+    // Bind to any available port
+    sockaddr_in myAddr{};
+    myAddr.sin_family = AF_INET;
+    myAddr.sin_addr.s_addr = INADDR_ANY;
+    myAddr.sin_port = 0; // auto assign
+    if (::bind(socketFd_, reinterpret_cast<sockaddr*>(&myAddr), sizeof(myAddr)) < 0) {
         ::close(socketFd_);
         socketFd_ = -1;
         throw std::runtime_error("Follower: bind failed");
     }
 
-    std::memset(&leaderAddr_, 0, sizeof(leaderAddr_));
+    // Set leader address
     leaderAddr_.sin_family = AF_INET;
     leaderAddr_.sin_port = htons(PORT);
     if (::inet_pton(AF_INET, ipAddress.c_str(), &leaderAddr_.sin_addr) <= 0) {
@@ -321,13 +281,7 @@ void FollowingVehicle::connectToLeader(const std::string& ipAddress) {
         throw std::runtime_error("Follower: invalid IP address");
     }
 
-    // Set recv timeout for JOIN_ACK
-    struct timeval tv{};
-    tv.tv_sec = 2;
-    tv.tv_usec = 0;
-    ::setsockopt(socketFd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    // Send JOIN message
+    // Send JOIN
     WireMessage join{};
     join.type = static_cast<std::uint8_t>(MsgType::JOIN);
     join.senderId = id_;
@@ -337,9 +291,10 @@ void FollowingVehicle::connectToLeader(const std::string& ipAddress) {
     join.speed = speed_;
     join.obstacle = 0;
     join.flags = FLAG_CONNECTED;
-    std::memcpy(join.clock, clock_, sizeof(clock_));
+    std::memcpy(join.clockMatrix, clock_, sizeof(clock_));
 
-    if (!sendMsgToLeader(&join, sizeof(join))) {
+    if (::sendto(socketFd_, &join, sizeof(join), 0,
+                 reinterpret_cast<sockaddr*>(&leaderAddr_), sizeof(leaderAddr_)) < 0) {
         ::close(socketFd_);
         socketFd_ = -1;
         throw std::runtime_error("Follower: failed to send JOIN");
@@ -347,38 +302,34 @@ void FollowingVehicle::connectToLeader(const std::string& ipAddress) {
 
     // Wait for JOIN_ACK
     WireMessage ack{};
-    sockaddr_in from{};
-    if (!recvMsgFromLeader(&ack, sizeof(ack), &from) ||
+    sockaddr_in fromAddr{};
+    socklen_t fromLen = sizeof(fromAddr);
+    if (::recvfrom(socketFd_, &ack, sizeof(ack), 0,
+                   reinterpret_cast<sockaddr*>(&fromAddr), &fromLen) < 0 ||
         static_cast<MsgType>(ack.type) != MsgType::JOIN_ACK) {
         ::close(socketFd_);
         socketFd_ = -1;
-        throw std::runtime_error("Follower: did not receive JOIN_ACK from leader");
+        throw std::runtime_error("Follower: no JOIN_ACK received");
     }
 
-    selfIndex_ = ack.assignedIndex;
-    initClock();
+    // Process JOIN_ACK
+    assignedIndex_ = ack.assignedIndex;
+    selfIndex_ = assignedIndex_;
+    onClockReceive(ack.senderIndex, ack.clockMatrix);
 
     connected_.store(true);
-    std::cout << "Connected to the leading vehicle! Assigned clockIndex=" << selfIndex_ << std::endl;
-
-    // Remove recv timeout for normal operation
-    tv.tv_sec = 1;
-    tv.tv_usec = 0;
-    ::setsockopt(socketFd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    std::cout << "\033[1;32mConnected to the leading vehicle!\033[0m\n";
 }
 
 void FollowingVehicle::run() {
     running_.store(true);
-
     setNonCanonicalMode();
 
     pthread_create(&recvThread_, nullptr, &FollowingVehicle::recvThreadEntry, this);
     pthread_create(&sendThread_, nullptr, &FollowingVehicle::sendThreadEntry, this);
     pthread_create(&inputThread_, nullptr, &FollowingVehicle::inputThreadEntry, this);
 
-    // Wait for threads
     pthread_join(inputThread_, nullptr);
-    // input thread triggers stop()
     pthread_join(recvThread_, nullptr);
     pthread_join(sendThread_, nullptr);
 
@@ -386,10 +337,7 @@ void FollowingVehicle::run() {
 }
 
 void FollowingVehicle::stop() {
-    if (!running_.exchange(false)) {
-        // already stopped
-        return;
-    }
+    if (!running_.exchange(false)) return;
 
     connected_.store(false);
     if (socketFd_ >= 0) {
@@ -403,58 +351,64 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
     static_cast<FollowingVehicle*>(arg)->recvLoop();
     return nullptr;
 }
-
 void* FollowingVehicle::sendThreadEntry(void* arg) {
     static_cast<FollowingVehicle*>(arg)->sendLoop();
     return nullptr;
 }
-
 void* FollowingVehicle::inputThreadEntry(void* arg) {
     static_cast<FollowingVehicle*>(arg)->inputLoop();
     return nullptr;
 }
 
 void FollowingVehicle::recvLoop() {
-    int displayCounter = 0;
     while (running_.load()) {
-        if (!connected_.load()) {
-            // Try reconnect if we were disconnected
-            if (!tryReconnect()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                continue;
-            }
-        }
-
         WireMessage msg{};
-        sockaddr_in from{};
-        if (!recvMsgFromLeader(&msg, sizeof(msg), &from)) {
-            std::cerr << RED << "[!] Lost connection to leader (UDP recv timeout)." << RESET << std::endl;
-            connected_.store(false);
-            continue;
-        }
+        sockaddr_in fromAddr{};
+        socklen_t fromLen = sizeof(fromAddr);
 
-        if (static_cast<MsgType>(msg.type) != MsgType::LEADER_STATE) {
-            continue;
+        ssize_t recvLen = ::recvfrom(socketFd_, &msg, sizeof(msg), 0,
+                                     reinterpret_cast<sockaddr*>(&fromAddr), &fromLen);
+        if (recvLen < 0) {
+            if (running_.load()) continue;
+            break;
         }
+        if (static_cast<size_t>(recvLen) != sizeof(msg)) continue;
+
+        if (static_cast<MsgType>(msg.type) != MsgType::LEADER_STATE) continue;
 
         pthread_mutex_lock(&stateMutex_);
-        onClockReceive(msg.senderIndex, msg.clock);
+        onClockReceive(msg.senderIndex, msg.clockMatrix);
 
         const bool leaderObstacle = (msg.obstacle != 0);
         const bool degraded = (msg.flags & FLAG_DEGRADED) != 0;
-        updateControl(msg.position, msg.speed, leaderObstacle, degraded);
 
-        // Print dashboard every N iterations
-        if (++displayCounter >= DISPLAY_UPDATE_INTERVAL) {
-            displayCounter = 0;
-            printDashboard(msg.position, msg.speed, degraded);
-        }
+        const auto light = static_cast<TrafficLight>(msg.trafficLight);
+        const double stopLine = msg.stopLinePos;
+
+        updateControl(msg.position, msg.speed, leaderObstacle, degraded, light, stopLine);
+
+        auto m = static_cast<FollowerMode>(mode_.load());
+
+        // Clear screen and move to top for better readability
+        std::cout << "\033[2J\033[H";
+
+        std::cout << "\n\033[1;36m---------------- FOLLOWER ----------------\033[0m\n";
+        std::cout << "ID: " << id_
+                  << "  Mode: " << colorMode(m)
+                  << "  Light: " << colorLight(light)
+                  << "  StopLine: " << stopLine << "m\n";
+        std::cout << "Position: " << position_
+                  << "  Speed: " << speed_
+                  << "  Gap: " << (msg.position - position_) << "m\n";
+
+        printClock(msg.numVehicles);
+        std::cout << std::flush;
+
         pthread_mutex_unlock(&stateMutex_);
     }
 }
 
 void FollowingVehicle::sendLoop() {
-    auto last = nowMs();
     auto cutInStart = std::int64_t{0};
 
     while (running_.load()) {
@@ -463,44 +417,41 @@ void FollowingVehicle::sendLoop() {
             continue;
         }
 
-        // Cut-in simulation: pause heartbeat for CUTIN_PAUSE_MS
+        // Cut-in simulation: pause heartbeat
         if (cutInActive_.load()) {
             if (cutInStart == 0) {
                 cutInStart = nowMs();
-                std::cout << "[CUT-IN] Simulating temporary communication loss for "
-                          << (CUTIN_PAUSE_MS / 1000) << "s..." << std::endl;
+                std::cout << "\n\033[1;33m[CUT-IN] Pausing heartbeat for "
+                          << (CUTIN_PAUSE_MS / 1000) << "s...\033[0m\n";
             }
             if (nowMs() - cutInStart < CUTIN_PAUSE_MS) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(HEARTBEAT_PERIOD_MS));
                 continue;
             }
-            // End cut-in
             cutInActive_.store(false);
             cutInStart = 0;
-            std::cout << "[CUT-IN] Communication resumed." << std::endl;
+            std::cout << "\033[1;33m[CUT-IN] Communication resumed.\033[0m\n";
         }
 
-        // Build follower heartbeat/state message
 #ifdef USE_OPENCL
-        // Optional GPU path: compute minimum obstacle distance using OpenCL.
-        // Only auto-sets obstacleDetected_ if it isn't already set by the user (key 'o').
         if (!obstacleDetected_.load()) {
             std::vector<float> obs(2048);
-            // simple deterministic pseudo-random-ish obstacles ahead of us
             float base = static_cast<float>(position_);
             for (size_t i = 0; i < obs.size(); ++i) {
-                obs[i] = base + static_cast<float>((i * 37u) % 200u); // 0..199m ahead
+                obs[i] = base + static_cast<float>((i * 37u) % 200u);
             }
             const float mn = gpuMinAbsDistance(obs, static_cast<float>(position_));
             if (mn < 8.0f) {
                 obstacleDetected_.store(true);
-                std::cout << "[FOLLOWER] GPU obstacle trigger (minDist=" << mn << ")." << std::endl;
+                std::cout << "\n\033[1;31m[FOLLOWER] GPU obstacle trigger (minDist="
+                          << mn << ").\033[0m\n";
             }
         }
 #endif
 
         pthread_mutex_lock(&stateMutex_);
         onClockLocalEvent();
+
         WireMessage out{};
         out.type = static_cast<std::uint8_t>(MsgType::FOLLOWER_STATE);
         out.senderId = id_;
@@ -510,25 +461,28 @@ void FollowingVehicle::sendLoop() {
         out.speed = speed_;
         out.obstacle = obstacleDetected_.load() ? 1 : 0;
         out.flags = FLAG_CONNECTED;
-        std::memcpy(out.clock, clock_, sizeof(clock_));
+
+        // follower does not command traffic light
+        out.trafficLight = static_cast<std::uint8_t>(TrafficLight::NONE);
+        out.stopLinePos = 0.0;
+        out.followerMode = mode_.load();
+
+        std::memcpy(out.clockMatrix, clock_, sizeof(clock_));
         pthread_mutex_unlock(&stateMutex_);
 
-        if (!sendMsgToLeader(&out, sizeof(out))) {
-            std::cerr << "Follower: send failed (leader not reachable)." << std::endl;
-            connected_.store(false);
+        if (::sendto(socketFd_, &out, sizeof(out), 0,
+                     reinterpret_cast<sockaddr*>(&leaderAddr_), sizeof(leaderAddr_)) < 0) {
+            std::cerr << "\033[1;31mFollower: send failed.\033[0m\n";
+            // For UDP, don't set disconnected
         }
 
-        // Periodic send
-        auto now = nowMs();
-        auto dt = now - last;
-        last = now;
-        (void)dt;
         std::this_thread::sleep_for(std::chrono::milliseconds(HEARTBEAT_PERIOD_MS));
     }
 }
 
 void FollowingVehicle::inputLoop() {
-    std::cout << "Controls: [o]=obstacle  [c]=cut-in (temporary comm loss)  [q]=quit" << std::endl;
+    std::cout << "\033[1;36mControls:\033[0m "
+              << "[o]=obstacle  [c]=cut-in  [q]=quit\n";
 
     while (running_.load()) {
         if (!isKeyPressed()) {
@@ -536,9 +490,10 @@ void FollowingVehicle::inputLoop() {
             continue;
         }
         char ch = static_cast<char>(::getchar());
+
         if (ch == 'o' || ch == 'O') {
             obstacleDetected_.store(true);
-            std::cout << "[FOLLOWER] Obstacle detected -> notifying leader." << std::endl;
+            std::cout << "\n\033[1;31m[FOLLOWER] Obstacle detected -> notifying leader.\033[0m\n";
         } else if (ch == 'c' || ch == 'C') {
             cutInActive_.store(true);
         } else if (ch == 'q' || ch == 'Q') {
@@ -548,83 +503,162 @@ void FollowingVehicle::inputLoop() {
                 leave.type = static_cast<std::uint8_t>(MsgType::LEAVE);
                 leave.senderId = id_;
                 leave.senderIndex = selfIndex_;
-                leave.assignedIndex = -1;
                 leave.position = position_;
                 leave.speed = speed_;
                 leave.obstacle = obstacleDetected_.load() ? 1 : 0;
                 leave.flags = 0;
-                std::memcpy(leave.clock, clock_, sizeof(clock_));
-                sendMsgToLeader(&leave, sizeof(leave));
+
+                leave.trafficLight = static_cast<std::uint8_t>(TrafficLight::NONE);
+                leave.stopLinePos = 0.0;
+                leave.followerMode = mode_.load();
+
+                std::memcpy(leave.clockMatrix, clock_, sizeof(clock_));
+                sendAll(socketFd_, &leave, sizeof(leave));
             }
-            std::cout << "[FOLLOWER] Leaving platoon. Bye!" << std::endl;
+            std::cout << "\n\033[1;33m[FOLLOWER] Leaving platoon. Bye!\033[0m\n";
             stop();
             return;
         }
     }
 }
 
-void FollowingVehicle::updateControl(double leaderPos, double leaderSpeed, bool leaderObstacle, bool degraded) {
-    // Calculate actual time delta
-    static std::int64_t lastUpdateMs = 0;
-    std::int64_t now = nowMs();
-    double dtSec = (lastUpdateMs == 0) ? 0.0 : static_cast<double>(now - lastUpdateMs) / 1000.0;
-    lastUpdateMs = now;
-    
-    // Clamp dt to avoid huge jumps
-    if (dtSec > 1.0) dtSec = 0.3;
-    if (dtSec < 0.01) dtSec = 0.0;
-
+// -------------------- traffic-light + left-behind use case --------------------
+void FollowingVehicle::updateControl(double leaderPos,
+                                     double leaderSpeed,
+                                     bool leaderObstacle,
+                                     bool degraded,
+                                     TrafficLight light,
+                                     double stopLinePos) {
     // Safety: if leader reports obstacle -> slow to stop.
     if (leaderObstacle) {
         speed_ *= 0.7;
         if (speed_ < 0.05) speed_ = 0.0;
-        position_ += speed_ * dtSec;
         return;
     }
 
-    // If degraded: be conservative (slow down a bit)
-    if (degraded) {
-        leaderSpeed *= 0.9;
+    // If degraded: be conservative (slow a bit)
+    if (degraded) leaderSpeed *= 0.9;
+
+    auto mode = static_cast<FollowerMode>(mode_.load());
+
+    const double PASS_MARGIN = 2.0;
+    const bool leaderPassed = (leaderPos > stopLinePos + PASS_MARGIN);
+    const bool iAmBeforeLine = (position_ < stopLinePos - 0.5);
+
+    // Left-behind detection:
+    // If leader passed but we are still before stop line while light is RED -> DECOUPLED.
+    if (light == TrafficLight::RED && leaderPassed && iAmBeforeLine) {
+        if (mode != FollowerMode::DECOUPLED) {
+            mode_.store(static_cast<std::uint8_t>(FollowerMode::DECOUPLED));
+            std::cout << "\n\033[1;35m[FOLLOWER " << id_
+                      << "] LEFT-BEHIND -> DECOUPLED\033[0m\n";
+        }
+        mode = FollowerMode::DECOUPLED;
     }
 
-    // PID-ish on spacing error
+    // If DECOUPLED and light becomes GREEN -> start CATCH_UP
+    if (mode == FollowerMode::DECOUPLED && light == TrafficLight::GREEN) {
+        mode_.store(static_cast<std::uint8_t>(FollowerMode::CATCH_UP));
+        std::cout << "\n\033[1;33m[FOLLOWER " << id_
+                  << "] GREEN -> CATCH_UP\033[0m\n";
+        mode = FollowerMode::CATCH_UP;
+    }
+
+    // If RED and leader not yet passed: stop before stop line, keep a safe gap.
+    if (light == TrafficLight::RED && !leaderPassed) {
+        mode_.store(static_cast<std::uint8_t>(FollowerMode::STOPPING_FOR_LIGHT));
+
+        // Stop target before the line so we keep a safe distance.
+        const double stopTarget = stopLinePos - targetDistance_;
+        const double distToStop = stopTarget - position_;
+
+        if (distToStop <= 0.3) {
+            speed_ = 0.0;
+        } else {
+            double desired = std::min(leaderSpeed, 12.0);
+            if (distToStop < 10.0) desired = std::min(desired, 6.0);
+            if (distToStop < 3.0) desired = 0.0;
+
+            speed_ += 0.25 * (desired - speed_);
+            if (speed_ < 0.05) speed_ = 0.0;
+        }
+
+        position_ += speed_ * (HEARTBEAT_PERIOD_MS / 1000.0);
+        return;
+    }
+
+    // DECOUPLED: stay stopped (waiting for GREEN)
+    if (mode == FollowerMode::DECOUPLED) {
+        speed_ = 0.0;
+        return;
+    }
+
+    // CATCH_UP: go faster than leader until target distance is recovered, then rejoin.
+    if (mode == FollowerMode::CATCH_UP) {
+        const double gap = leaderPos - position_;
+        const double error = gap - targetDistance_;
+
+        double targetSpeed = leaderSpeed + 25.0; // boost above leader
+        if (targetSpeed > leaderSpeed + 30.0) targetSpeed = leaderSpeed + 30.0;
+        if (targetSpeed < 0.0) targetSpeed = 0.0;
+
+        speed_ += 0.3 * (targetSpeed - speed_);
+        position_ += speed_ * (HEARTBEAT_PERIOD_MS / 1000.0);
+
+        if (std::abs(error) <= 1.0) {
+            mode_.store(static_cast<std::uint8_t>(FollowerMode::COUPLED));
+            std::cout << "\n\033[1;32m[FOLLOWER " << id_
+                      << "] Rejoined -> COUPLED\033[0m\n";
+        }
+        return;
+    }
+
+    // Normal COUPLED following (PID-ish control)
+    mode_.store(static_cast<std::uint8_t>(FollowerMode::COUPLED));
+
     const double gap = leaderPos - position_;
     const double error = gap - targetDistance_;
-    integralError_ += error * dtSec;  // Scale integral by dt
-    const double derivative = (dtSec > 0) ? (error - previousError_) / dtSec : 0.0;
+    integralError_ += error;
+    const double derivative = error - previousError_;
     previousError_ = error;
 
     const double control = Kp_ * error + Ki_ * integralError_ + Kd_ * derivative;
 
-    // Convert to speed adjustment
     double targetSpeed = leaderSpeed + control;
     if (targetSpeed < 0.0) targetSpeed = 0.0;
     if (targetSpeed > leaderSpeed + 20.0) targetSpeed = leaderSpeed + 20.0;
 
-    // Smooth speed changes
-    speed_ += 0.3 * (targetSpeed - speed_);
+    speed_ += 0.2 * (targetSpeed - speed_);
     if (std::abs(speed_) < 1e-6) speed_ = 0.0;
 
-    // Update position using actual time delta
-    position_ += speed_ * dtSec;
+    position_ += speed_ * (HEARTBEAT_PERIOD_MS / 1000.0);
 }
 
-bool FollowingVehicle::sendMsgToLeader(const void* data, size_t len) {
-    ssize_t n = ::sendto(socketFd_, data, len, 0,
-                         reinterpret_cast<const sockaddr*>(&leaderAddr_), sizeof(leaderAddr_));
-    return (n == static_cast<ssize_t>(len));
+// -------------------- socket helpers --------------------
+
+bool FollowingVehicle::sendAll(int fd, const void* data, size_t len) {
+    const std::uint8_t* p = static_cast<const std::uint8_t*>(data);
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t n = ::send(fd, p + sent, len - sent, 0);
+        if (n <= 0) return false;
+        sent += static_cast<size_t>(n);
+    }
+    return true;
 }
 
-bool FollowingVehicle::recvMsgFromLeader(void* data, size_t len, sockaddr_in* from) {
-    socklen_t fromLen = sizeof(sockaddr_in);
-    ssize_t n = ::recvfrom(socketFd_, data, len, 0, reinterpret_cast<sockaddr*>(from), &fromLen);
-    if (n <= 0) return false;
-    return (static_cast<size_t>(n) == len);
+bool FollowingVehicle::recvAll(int fd, void* data, size_t len) {
+    std::uint8_t* p = static_cast<std::uint8_t*>(data);
+    size_t recvd = 0;
+    while (recvd < len) {
+        ssize_t n = ::recv(fd, p + recvd, len - recvd, 0);
+        if (n <= 0) return false;
+        recvd += static_cast<size_t>(n);
+    }
+    return true;
 }
 
 bool FollowingVehicle::tryReconnect() {
-    // Minimal reconnect logic: user can restart follower; we also auto-retry.
-    // We assume leader is on localhost for reconnect.
     if (socketFd_ >= 0) {
         ::close(socketFd_);
         socketFd_ = -1;
@@ -642,26 +676,41 @@ bool FollowingVehicle::tryReconnect() {
 // Program entry point
 // ---------------------------
 int main(int argc, char** argv) {
-    // Optional CLI: ./follow [id] [initialSpeed] [initialPosition]
     int id = 2;
     double initialSpeed = 0.0;
     double initialPos = 10.0;
+    double targetDistance = 10.0;
+    std::string ip = "127.0.0.1";
 
-    if (argc >= 2) id = std::stoi(argv[1]);
-    if (argc >= 3) initialSpeed = std::stod(argv[2]);
-    if (argc >= 4) initialPos = std::stod(argv[3]);
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--id" && i + 1 < argc) {
+            id = std::stoi(argv[++i]);
+        } else if (arg == "--initspeed" && i + 1 < argc) {
+            initialSpeed = std::stod(argv[++i]);
+        } else if (arg == "--initposition" && i + 1 < argc) {
+            initialPos = std::stod(argv[++i]);
+        } else if (arg == "--distance" && i + 1 < argc) {
+            targetDistance = std::stod(argv[++i]);
+        } else if (arg == "--ip" && i + 1 < argc) {
+            ip = argv[++i];
+        } else {
+            std::cerr << "Unknown argument: " << arg << "\n";
+            std::cerr << "Usage: ./follow [--id <id>] [--initspeed <speed>] "
+                         "[--initposition <pos>] [--distance <dist>] [--ip <ip>]\n";
+            return 1;
+        }
+    }
 
     // Control params (tuned lightly for stability)
-    double targetDistance = 10.0;
     double Kp = 0.05, Ki = 0.0005, Kd = 0.02;
 
     try {
         FollowingVehicle follower(id, initialSpeed, initialPos, targetDistance, Kp, Ki, Kd);
-        const std::string ip = (argc >= 5) ? std::string(argv[4]) : std::string("127.0.0.1");
         follower.connectToLeader(ip);
         follower.run();
     } catch (const std::exception& ex) {
-        std::cerr << "Follower error: " << ex.what() << std::endl;
+        std::cerr << "Follower error: " << ex.what() << "\n";
         return 1;
     }
     return 0;
