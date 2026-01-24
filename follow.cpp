@@ -11,6 +11,8 @@
 #include <thread>
 #include <cmath>
 #include <algorithm>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 // Constructor
 FollowingVehicle::FollowingVehicle(int id,
@@ -31,6 +33,8 @@ FollowingVehicle::FollowingVehicle(int id,
     rearVehicleInfo_.port = 0;
 
     pthread_mutex_init(&leaderMutex_, nullptr);
+    pthread_mutex_init(&eventMutex_, nullptr);
+    pthread_cond_init(&eventCv_, nullptr);
 }
 
 // Destructor
@@ -42,6 +46,8 @@ FollowingVehicle::~FollowingVehicle() {
         clientSocket_ = -1;
     }
     pthread_mutex_destroy(&leaderMutex_);
+    pthread_mutex_destroy(&eventMutex_);
+    pthread_cond_destroy(&eventCv_);
 }
 
 // Helpers
@@ -125,6 +131,8 @@ void FollowingVehicle::startThreads() {
     pthread_create(&runThread_, nullptr, runThreadEntry, this);
     pthread_create(&sendStatusThread_, nullptr, sendStatusThreadEntry, this);
     pthread_create(&displayThread_, nullptr, displayThreadEntry, this);
+    pthread_create(&eventThread_, nullptr, eventSimulationThreadEntry, this);
+    pthread_create(&eventSenderThread_, nullptr, eventSenderThreadEntry, this);
 }
 
 // Set follower state
@@ -176,6 +184,8 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     TrafficLightStatus alert = static_cast<TrafficLightStatus>(trafficMsg.status);
                     std::cout << "Received traffic light alert: "
                               << (alert == LIGHT_RED ? "RED" : "GREEN") << std::endl;
+                    
+                    // Process the alert
                     switch (alert) {
                         case LIGHT_RED:
                             follower->setState(STOPPING_FOR_RED_LIGHT);
@@ -185,6 +195,20 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                             break;
                         default:
                             break;
+                    }
+
+                    // Forward to rear vehicle
+                    pthread_mutex_lock(&follower->leaderMutex_);
+                    VehicleInfo rear = follower->rearVehicleInfo_;
+                    pthread_mutex_unlock(&follower->leaderMutex_);
+
+                    if (rear.id != -1 && rear.ipAddress != 0 && rear.port != 0) {
+                        struct sockaddr_in rearAddr{};
+                        rearAddr.sin_family = AF_INET;
+                        rearAddr.sin_addr.s_addr = rear.ipAddress;
+                        rearAddr.sin_port = rear.port;
+                        sendto(follower->clientSocket_, &trafficMsg, sizeof(trafficMsg), 0,
+                               (const struct sockaddr*)&rearAddr, sizeof(rearAddr));
                     }
                     break;
                 }
@@ -427,13 +451,155 @@ void* FollowingVehicle::displayThreadEntry(void* arg) {
     return nullptr;
 }
 
+// Event simulation thread - reads user input from FIFO
+void* FollowingVehicle::eventSimulationThreadEntry(void* arg) {
+    FollowingVehicle* follower = static_cast<FollowingVehicle*>(arg);
+
+    // FIFO already created in main()
+    std::string fifoPath = "/tmp/follower_" + std::to_string(follower->info_.id) + "_event_fifo";
+
+    int fd = open(fifoPath.c_str(), O_RDONLY);
+    if (fd == -1) return nullptr;
+
+    int eventChoice;
+    while (follower->clientRunning_) {
+        if (read(fd, &eventChoice, sizeof(int)) > 0) {
+            std::cout << "\n[FOLLOWER " << follower->info_.id << "] Received Event: " << eventChoice << std::endl;
+
+            if (eventChoice == 0) {
+                follower->clientRunning_ = false;
+                break;
+            }
+
+            // Push event to queue for sender thread
+            pthread_mutex_lock(&follower->eventMutex_);
+            follower->eventQueue_.push(eventChoice);
+            pthread_cond_signal(&follower->eventCv_);
+            pthread_mutex_unlock(&follower->eventMutex_);
+        }
+    }
+    close(fd);
+    unlink(fifoPath.c_str());
+    return nullptr;
+}
+
+// Event sender thread - sends events to front and rear vehicles
+void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
+    FollowingVehicle* follower = static_cast<FollowingVehicle*>(arg);
+
+    while (follower->clientRunning_) {
+        // Wait for event
+        pthread_mutex_lock(&follower->eventMutex_);
+        while (follower->eventQueue_.empty() && follower->clientRunning_) {
+            pthread_cond_wait(&follower->eventCv_, &follower->eventMutex_);
+        }
+        if (!follower->clientRunning_) {
+            pthread_mutex_unlock(&follower->eventMutex_);
+            break;
+        }
+        int eventCode = follower->eventQueue_.front();
+        follower->eventQueue_.pop();
+        pthread_mutex_unlock(&follower->eventMutex_);
+
+        // Build traffic light message (similar to leader)
+        TrafficLightMessage tlMsg{};
+        tlMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
+        tlMsg.timestamp = nowMs();
+
+        switch (eventCode) {
+            case 1: // Red light
+                tlMsg.status = LIGHT_RED;
+                follower->setState(STOPPING_FOR_RED_LIGHT);
+                break;
+            case 2: // Green light
+                tlMsg.status = LIGHT_GREEN;
+                follower->setState(STARTING);
+                break;
+            default:
+                continue; // Skip unknown events
+        }
+
+        // Get front and rear vehicle info
+        pthread_mutex_lock(&follower->leaderMutex_);
+        VehicleInfo front = follower->frontVehicleInfo_;
+        VehicleInfo rear = follower->rearVehicleInfo_;
+        pthread_mutex_unlock(&follower->leaderMutex_);
+
+        // Send to front vehicle
+        if (front.id != -1 && front.ipAddress != 0 && front.port != 0) {
+            struct sockaddr_in frontAddr{};
+            frontAddr.sin_family = AF_INET;
+            frontAddr.sin_addr.s_addr = front.ipAddress;
+            frontAddr.sin_port = front.port;
+            sendto(follower->clientSocket_, &tlMsg, sizeof(tlMsg), 0,
+                   (const struct sockaddr*)&frontAddr, sizeof(frontAddr));
+        }
+
+        // Send to rear vehicle
+        if (rear.id != -1 && rear.ipAddress != 0 && rear.port != 0) {
+            struct sockaddr_in rearAddr{};
+            rearAddr.sin_family = AF_INET;
+            rearAddr.sin_addr.s_addr = rear.ipAddress;
+            rearAddr.sin_port = rear.port;
+            sendto(follower->clientSocket_, &tlMsg, sizeof(tlMsg), 0,
+                   (const struct sockaddr*)&rearAddr, sizeof(rearAddr));
+        }
+
+        std::cout << "[FOLLOWER " << follower->info_.id << "] Sent traffic light event to neighbors" << std::endl;
+    }
+    return nullptr;
+}
+
 int main(int argc, char* argv[]) {
+    // Check if running in input_mode (separate terminal for event input)
+    if (argc >= 3 && std::string(argv[1]) == "input_mode") {
+        int followerId = std::stoi(argv[2]);
+        std::string fifoPath = "/tmp/follower_" + std::to_string(followerId) + "_event_fifo";
+        
+        int fd = open(fifoPath.c_str(), O_WRONLY);
+        if (fd == -1) {
+            std::cerr << "Failed to open FIFO: " << fifoPath << std::endl;
+            exit(1);
+        }
+
+        int choice;
+        while (true) {
+            std::cout << "\033[2J\033[H"; // clear screen + home
+            std::cout << "\n[FOLLOWER " << followerId << " EVENT INPUT]\n";
+            std::cout << "1: Traffic light RED\n";
+            std::cout << "2: Traffic light GREEN\n";
+            std::cout << "0: Exit\n";
+            std::cout << "Enter choice: ";
+            std::cin >> choice;
+
+            write(fd, &choice, sizeof(int));
+            if (choice == 0) break;
+        }
+        close(fd);
+        return 0;
+    }
+
+    // Normal follower mode
     int id = FOLLOWER_INITIAL_ID;
     double initialSpeed = FOLLOWER_INITIAL_SPEED;
     double initialPosition = FOLLOWER_INITIAL_POSITION;
     if (argc >= 2) id = std::stoi(argv[1]);
-    if (argc >= 3) initialSpeed = std::stod(argv[2]);
-    if (argc >= 4) initialPosition = std::stod(argv[3]);
+
+    // New argument form: ./follow id initialPosition
+    // If provided, argv[2] is treated as the initial position (meters).
+    if (argc >= 3) initialPosition = std::stod(argv[2]);
+
+    // Create unique FIFO for this follower
+    std::string fifoPath = "/tmp/follower_" + std::to_string(id) + "_event_fifo";
+    unlink(fifoPath.c_str());
+    mkfifo(fifoPath.c_str(), 0666);
+
+    // Fork a new terminal for event input
+    if (fork() == 0) {
+        std::string idStr = std::to_string(id);
+        execlp("gnome-terminal", "gnome-terminal", "--", argv[0], "input_mode", idStr.c_str(), NULL);
+        exit(0);
+    }
 
     FollowingVehicle follower(id, initialSpeed, initialPosition);
     try {

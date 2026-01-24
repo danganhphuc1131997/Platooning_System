@@ -16,7 +16,7 @@ enum MessageType : std::uint8_t {
     STATUS_UPDATE = 0,   // Vehicle status update
     COUPLE_COMMAND = 1,  // Command to couple/decouple vehicles
     PLATOON_STATE = 2,   // Platoon state broadcast
-    TRAFFIC_LIGHT_ALERT = 3    // Traffic alert message
+    TRAFFIC_LIGHT_ALERT = 3   // Traffic alert message
 };
 
 struct EventMessage {
@@ -28,7 +28,7 @@ struct EventMessage {
 // Traffic light status alert data
 struct TrafficLightMessage {
     MessageType type;       // Message type
-    std::uint8_t status; // LIGHT_RED or LIGHT_GREEN
+    std::uint8_t status;    // LIGHT_RED or LIGHT_GREEN
     std::int64_t timestamp; // Timestamp of the event
 };
 

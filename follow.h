@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <queue>
 
 #include <netinet/in.h>
 
@@ -57,6 +58,11 @@ private:
     int clientSocket_;
     struct sockaddr_in leaderAddr_;
 
+    // Event handling
+    std::queue<int> eventQueue_;      // Queue of event codes from user input
+    pthread_mutex_t eventMutex_{};    // Protects eventQueue_
+    pthread_cond_t eventCv_{};        // Signal when new event is available
+
     // Timing
     static std::int64_t nowMs();
 
@@ -69,6 +75,10 @@ private:
     static void* sendStatusThreadEntry(void* arg);      // Thread entry for sending status to leader
     pthread_t displayThread_{};
     static void* displayThreadEntry(void* arg);         // Display status thread
+    pthread_t eventThread_{};
+    static void* eventSimulationThreadEntry(void* arg); // User input event thread
+    pthread_t eventSenderThread_{};
+    static void* eventSenderThreadEntry(void* arg);     // Event sender thread
     
     // Helpers
     void createClientSocket();

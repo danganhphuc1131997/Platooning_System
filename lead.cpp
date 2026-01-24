@@ -262,6 +262,26 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                     leader->sendPlatoonState();
                     break;
                 }
+                case TRAFFIC_LIGHT_ALERT: {
+                    if (static_cast<size_t>(recvLen) < sizeof(TrafficLightMessage)) {
+                        std::cerr << "Received short TRAFFIC_LIGHT_ALERT (" << recvLen << " bytes)\n";
+                        break;
+                    }
+                    TrafficLightMessage tlMsg;
+                    std::memcpy(&tlMsg, buffer, sizeof(tlMsg));
+                    TrafficLightStatus alert = static_cast<TrafficLightStatus>(tlMsg.status);
+                    std::cout << "Received traffic light alert from vehicle "
+                              << followerAddr.sin_addr.s_addr << ":"
+                              << ntohs(followerAddr.sin_port) << " - "
+                              << (alert == LIGHT_RED ? "RED" : "GREEN") << std::endl;
+                    // For leader, we just log it. Further processing can be added here.
+                    if (alert == LIGHT_RED) {
+                        leader->setState(STOPPING);
+                    } else if (alert == LIGHT_GREEN) {
+                        leader->setState(STARTING);
+                    }
+                    break;
+                }
                 default:
                     std::cout << "Unknown message type received: " << static_cast<int>(msgType) << std::endl;
                     break;
@@ -511,39 +531,34 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
         leader->eventQueue_.pop();
         pthread_mutex_unlock(&leader->eventMutex_);
 
-        // Send event message to all followers
+        // Send event message only to the vehicle directly behind leader (index 1 in sorted list)
         pthread_mutex_lock(&leader->mutex_);
-        for (const auto &v : leader->platoonState_.vehicles) {
-            if (v.id == leader->info_.id) continue;
-            if (v.ipAddress == 0 || v.port == 0) continue;
-            struct sockaddr_in dest{};
-            dest.sin_family = AF_INET;
-            dest.sin_addr.s_addr = v.ipAddress;
-            dest.sin_port = v.port;
+        if (leader->platoonState_.vehicles.size() > 1) {
+            const VehicleInfo& rear = leader->platoonState_.vehicles[1]; // index 0 is leader, index 1 is rear
+            if (rear.ipAddress != 0 && rear.port != 0) {
+                struct sockaddr_in dest{};
+                dest.sin_family = AF_INET;
+                dest.sin_addr.s_addr = rear.ipAddress;
+                dest.sin_port = rear.port;
 
-            ssize_t sentBytes = 0;
-            switch (eventMsg.type)
-            {
-                case TRAFFIC_LIGHT_ALERT: {
-                    TrafficLightMessage tlMsg{};
-                    tlMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
-                    tlMsg.timestamp = eventMsg.timestamp;
-                    // eventMsg.eventData is legacy pointer; if used, ignore — instead include type tag in EventMessage
-                    // For now, if eventMsg.type == TRAFFIC_LIGHT_ALERT we assume eventMsg.timestamp encodes the event time
-                    // and leader state indicates RED/GREEN via leader->getState() or via event queue metadata.
-                    // Here we send a RED/ GREEN based on eventMsg.timestamp usage is not ideal — recommend refactoring EventMessage.
-                    // Fallback: send a simple TrafficLightMessage with RED when leader state is STOPPING, GREEN when STARTING.
-                    tlMsg.status = (leader->getState() == STOPPING) ? LIGHT_RED : LIGHT_GREEN;
-                    sentBytes = sendto(leader->serverSocket_, &tlMsg, sizeof(tlMsg), 0,
-                                            (const struct sockaddr*)&dest, sizeof(dest));
-                    break;
+                ssize_t sentBytes = 0;
+                switch (eventMsg.type) {
+                    case TRAFFIC_LIGHT_ALERT: {
+                        TrafficLightMessage tlMsg{};
+                        tlMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
+                        tlMsg.timestamp = eventMsg.timestamp;
+                        tlMsg.status = (leader->getState() == STOPPING) ? LIGHT_RED : LIGHT_GREEN;
+                        sentBytes = sendto(leader->serverSocket_, &tlMsg, sizeof(tlMsg), 0,
+                                           (const struct sockaddr*)&dest, sizeof(dest));
+                        break;
+                    }
+                    default:
+                        break;
                 }
-                default:
-                    break;
-            }
 
-            if (sentBytes < 0) {
-                std::cerr << "Failed to send event to follower " << v.id << ": " << strerror(errno) << std::endl;
+                if (sentBytes < 0) {
+                    std::cerr << "Failed to send event to rear vehicle " << rear.id << ": " << strerror(errno) << std::endl;
+                }
             }
         }
         pthread_mutex_unlock(&leader->mutex_);
@@ -592,10 +607,11 @@ int main(int argc, char** argv) {
         while (true) {
             // Display menu
             std::cout << "\033[2J\033[H"; // clear screen + home
-            std::cout << "\n[EVENT INPUT TERMINAL]\n";
+            std::cout << "\n[LEADER EVENT INPUT]\n";
             std::cout << "1: Obstacle detected\n";
             std::cout << "2: Traffic light RED\n";
             std::cout << "3: Traffic light GREEN\n";
+            std::cout << "4: Cut-in vehicle alert\n";
             std::cout << "0: Exit\n";
             std::cout << "Enter choice: ";
             std::cin >> choice;
