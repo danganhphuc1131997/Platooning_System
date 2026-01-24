@@ -2,115 +2,88 @@
  * @file follow.h
  *
  * @brief Following vehicle (platoon follower) simulation.
- *
- * Changes vs. original version:
- *  - Uses pthreads + mutex (no OpenMP for sockets)
- *  - Uses fixed-size WireMessage for TCP communication
- *  - Adds Cut-in simulation: temporarily pause heartbeat to emulate partition
- *  - Safe mode when connection is lost; optional reconnect
- *  - Adds traffic light use-case:
- *      - stop before leader's stop line on RED
- *      - if left-behind while leader already passed -> DECOUPLED
- *      - on GREEN -> CATCH_UP, then rejoin to COUPLED
  */
 
 #ifndef FOLLOW_H
 #define FOLLOW_H
 
-#include "message.h"
-
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <queue>
 
 #include <netinet/in.h>
 
 #include <arpa/inet.h>
 #include <pthread.h>
+#include "vehicle.h"
 
-static constexpr int PORT = 8080;
-
+enum FollowerState : std::uint8_t {
+    NORMAL = 0,   // Normal following
+    ERROR,        // Error state
+    STOPPING,     // Braking to stop
+    STOPPED,      // Stopped
+    STARTING,     // Starting from stop,
+    CATCHING_UP,   // Speeding up to catch leader
+    STOPPING_FOR_RED_LIGHT // Stopping for red light
+};
 class FollowingVehicle {
 public:
     FollowingVehicle(int id,
                      double initialSpeed,
-                     double initialPosition,
-                     double targetDistance,
-                     double Kp,
-                     double Ki,
-                     double Kd);
-
+                     double initialPosition);
     ~FollowingVehicle();
 
-    void connectToLeader(const std::string& ipAddress);
-    void run();
-    void stop();
+    void connectToLeader(); // Connect to the leader vehicle
+    void startThreads(); // Start internal threads
+    void setState(FollowerState newState);
+    FollowerState getState() const;
 
 private:
-    int id_;
-    int selfIndex_{-1};
-    std::string leaderIp_;
+    VehicleInfo info_;
+    VehicleInfo frontVehicleInfo_;
+    VehicleInfo rearVehicleInfo_;
 
-    double position_;
-    double speed_;
-    int socketFd_;
-    sockaddr_in leaderAddr_;
-    int assignedIndex_{-1};
+    FollowerState state_;
+    std::atomic<bool> clientRunning_;
 
-    // Controller
-    double targetDistance_;
-    double Kp_;
-    double Ki_;
-    double Kd_;
-    double integralError_;
-    double previousError_;
+    PlatoonState platoonState_; // Current state of the platoon
+    
+    // Leader snapshot (updated by recv thread when leader STATUS_UPDATE received)
+    double leaderPosition_{}; // latest leader position (meters)
+    double leaderSpeed_{};    // latest leader speed (m/s)
+    pthread_mutex_t leaderMutex_{}; // protects leaderPosition_/leaderSpeed_
 
-    // Flags
-    std::atomic<bool> running_;
-    std::atomic<bool> connected_;
-    std::atomic<bool> obstacleDetected_;
-    std::atomic<bool> cutInActive_;
+    // Client socket
+    int clientSocket_;
+    struct sockaddr_in leaderAddr_;
 
-    // Follower mode (state machine for traffic-light use case)
-    std::atomic<std::uint8_t> mode_; // FollowerMode
+    // Event handling
+    std::queue<int> eventQueue_;      // Queue of event codes from user input
+    pthread_mutex_t eventMutex_{};    // Protects eventQueue_
+    pthread_cond_t eventCv_{};        // Signal when new event is available
 
-    // Logical clock
-    std::int32_t clock_[MAX_VEHICLES][MAX_VEHICLES]{};
-
-    // Concurrency
-    pthread_mutex_t stateMutex_;
-    pthread_t recvThread_{};
-    pthread_t sendThread_{};
-    pthread_t inputThread_{};
+    // Timing
+    static std::int64_t nowMs();
 
     // Threads
-    static void* recvThreadEntry(void* arg);
-    static void* sendThreadEntry(void* arg);
-    static void* inputThreadEntry(void* arg);
-
-    void recvLoop();
-    void sendLoop();
-    void inputLoop();
-
+    pthread_t recvThread_{};
+    static void* recvThreadEntry(void* arg);            // Thread entry for receiving messages
+    pthread_t runThread_{};
+    static void* runThreadEntry(void* arg);             // Main follower logic thread
+    pthread_t sendStatusThread_{};
+    static void* sendStatusThreadEntry(void* arg);      // Thread entry for sending status to leader
+    pthread_t displayThread_{};
+    static void* displayThreadEntry(void* arg);         // Display status thread
+    pthread_t eventThread_{};
+    static void* eventSimulationThreadEntry(void* arg); // User input event thread
+    pthread_t eventSenderThread_{};
+    static void* eventSenderThreadEntry(void* arg);     // Event sender thread
+    
     // Helpers
-    void initClock();
-    void mergeClockElementwiseMax(const std::int32_t other[MAX_VEHICLES][MAX_VEHICLES]);
-    void onClockReceive(int senderIdx, const std::int32_t other[MAX_VEHICLES][MAX_VEHICLES]);
-    void onClockLocalEvent();
-    void printClock(int numVehicles);
-
-    void updateControl(double leaderPos,
-                       double leaderSpeed,
-                       bool leaderObstacle,
-                       bool degraded,
-                       TrafficLight light,
-                       double stopLinePos);
-
-    bool sendAll(int fd, const void* data, size_t len);
-    bool recvAll(int fd, void* data, size_t len);
-
-    static std::int64_t nowMs();
-    bool tryReconnect();
+    void createClientSocket();
+    void sendStatusToLeader();
+    void sendCoupleCommandToLeader();
 };
 
 #endif // FOLLOW_H

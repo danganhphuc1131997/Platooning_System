@@ -12,6 +12,10 @@ CMakeCache.txt
 cmake_install.cmake
 Makefile.user
 
+# Executable binaries for follow and lead
+follow
+lead
+
 # Object and binary files
 *.o
 *.obj
