@@ -633,10 +633,21 @@ int main(int argc, char** argv) {
         unlink(EVENT_FIFO);
         mkfifo(EVENT_FIFO, 0666);
 
-        // Open new terminal for input
-        if (fork() == 0) {
-            // Run gnome-terminal with this file and input_mode argument
-            execlp("gnome-terminal", "gnome-terminal", "--", argv[0], "input_mode", NULL);
+        // Open new terminal for input. Try several common terminal emulators;
+        // if none can be launched (e.g., WSL/no GUI), fall back to running
+        // `input_mode` directly in the child process so input still works.
+        pid_t child = fork();
+        if (child == 0) {
+            const char* terms[] = {"gnome-terminal", "x-terminal-emulator", "xfce4-terminal", "lxterminal", "mate-terminal", "konsole", "xterm"};
+            for (const char* term : terms) {
+                execlp(term, term, "--", argv[0], "input_mode", NULL);
+                execlp(term, term, "-e", argv[0], "input_mode", NULL);
+            }
+
+            // Couldn't launch a separate GUI terminal — run input_mode directly here.
+            execlp(argv[0], argv[0], "input_mode", NULL);
+
+            // If everything failed, exit child quietly.
             exit(0);
         }
 

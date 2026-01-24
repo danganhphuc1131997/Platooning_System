@@ -594,10 +594,23 @@ int main(int argc, char* argv[]) {
     unlink(fifoPath.c_str());
     mkfifo(fifoPath.c_str(), 0666);
 
-    // Fork a new terminal for event input
-    if (fork() == 0) {
+    // Fork a new terminal for event input.
+    // Try several common terminal emulators; if none can be launched (e.g., in WSL/no GUI),
+    // fall back to running `input_mode` in the child process so the user can still input events.
+    pid_t child = fork();
+    if (child == 0) {
         std::string idStr = std::to_string(id);
-        execlp("gnome-terminal", "gnome-terminal", "--", argv[0], "input_mode", idStr.c_str(), NULL);
+        const char* terms[] = {"gnome-terminal", "x-terminal-emulator", "xfce4-terminal", "lxterminal", "mate-terminal", "konsole", "xterm"};
+        for (const char* term : terms) {
+            // Try common argument forms; successful execlp will not return.
+            execlp(term, term, "--", argv[0], "input_mode", idStr.c_str(), NULL);
+            execlp(term, term, "-e", argv[0], "input_mode", idStr.c_str(), NULL);
+        }
+
+        // Couldn't launch a separate GUI terminal — run input_mode directly in this child process.
+        execlp(argv[0], argv[0], "input_mode", idStr.c_str(), NULL);
+
+        // If we reach here, everything failed; exit child quietly.
         exit(0);
     }
 
