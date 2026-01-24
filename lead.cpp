@@ -23,6 +23,8 @@ LeadingVehicle::LeadingVehicle(int id, double initialPosition, double initialSpe
     info_.position = initialPosition;
     info_.speed = initialSpeed;
     info_.mode = LeaderMode;
+    info_.ipAddress = inet_addr("127.0.0.1");
+    info_.port = htons(SERVER_PORT);
     platoonState_.leaderId = id;
 
     // Create event queue
@@ -94,33 +96,42 @@ void LeadingVehicle::createServerSocket() {
     }
 }
 
-// Send a textual platoon state via UDP broadcast (simple implementation)
+// Send structured platoon state to all followers
 void LeadingVehicle::sendPlatoonState() {
-    // Build a simple textual representation under mutex
-    std::string payload;
+    PlatoonStateMessage psMsg{};
+    psMsg.type = MessageType::PLATOON_STATE;
+    psMsg.timestamp = nowMs();
+
     pthread_mutex_lock(&mutex_);
-    payload += "PLATOON_STATE ";
-    payload += "leader=" + std::to_string(platoonState_.leaderId) + " ";
-    payload += "count=" + std::to_string((int)platoonState_.vehicles.size()) + " ";
-    payload += "members:";
-    for (const auto &v : platoonState_.vehicles) {
-        payload += std::to_string(v.id);
-        payload += (v.mode == LeaderMode) ? "(L)" : "(F)";
-        payload += ",";
+    psMsg.leaderId = platoonState_.leaderId;
+
+    // Sort vehicles by position descending (leader first, then followers in order)
+    std::vector<VehicleInfo> sorted = platoonState_.vehicles;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const VehicleInfo& a, const VehicleInfo& b) { return a.position > b.position; });
+
+    psMsg.vehicleCount = std::min(static_cast<int>(sorted.size()), MAX_PLATOON_VEHICLES);
+    for (int i = 0; i < psMsg.vehicleCount; ++i) {
+        psMsg.vehicles[i] = sorted[i];
+    }
+
+    // Send to each follower using their stored address
+    for (const auto& v : platoonState_.vehicles) {
+        if (v.id == info_.id) continue; // skip leader
+        if (v.ipAddress == 0 || v.port == 0) continue;
+
+        struct sockaddr_in dest{};
+        dest.sin_family = AF_INET;
+        dest.sin_addr.s_addr = v.ipAddress;
+        dest.sin_port = v.port;
+
+        ssize_t sent = sendto(serverSocket_, &psMsg, sizeof(psMsg), 0,
+                              (struct sockaddr*)&dest, sizeof(dest));
+        if (sent < 0) {
+            std::cerr << "sendPlatoonState to " << v.id << " failed: " << strerror(errno) << "\n";
+        }
     }
     pthread_mutex_unlock(&mutex_);
-
-    // Send via UDP broadcast on SERVER_PORT
-    struct sockaddr_in destAddr{};
-    destAddr.sin_family = AF_INET;
-    destAddr.sin_port = htons(SERVER_PORT);
-    destAddr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-
-    ssize_t sent = sendto(serverSocket_, payload.c_str(), payload.size(), 0,
-                          (struct sockaddr*)&destAddr, sizeof(destAddr));
-    if (sent < 0) {
-        std::cerr << "sendPlatoonState: sendto failed\n";
-    }
 }
 
 // Static method: Thread entry for receiving messages
@@ -170,11 +181,13 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                         fi.mode = FollowerMode;
                         leader->platoonState_.vehicles.push_back(fi);
                         std::cout << "Added new vehicle " << fi.id << " to platoon\n";
+                        it = leader->platoonState_.vehicles.end() - 1; // point to newly added
                     }
 
-                    // Store follower network address and heartbeat timestamp
-                    leader->followerAddrs_[status.info.id] = followerAddr;
-                    leader->lastHeartbeatTimes_[status.info.id] = nowMs();
+                    // Store follower network address and heartbeat timestamp directly in VehicleInfo
+                    it->ipAddress = followerAddr.sin_addr.s_addr;
+                    it->port = followerAddr.sin_port;
+                    it->lastHeartbeatMs = nowMs();
 
                     pthread_mutex_unlock(&leader->mutex_);
                     break;
@@ -209,12 +222,16 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                             fi.id = cmd.info.id;
                             fi.position = cmd.info.position;
                             fi.speed = cmd.info.speed;
+                            fi.ipAddress = cmd.info.ipAddress;
+                            fi.port = cmd.info.port;
                             fi.mode = FollowerMode;
                             leader->platoonState_.vehicles.push_back(fi);
                             std::cout << "Added vehicle " << fi.id << " to platoon\n";
                         } else {
                             it->position = cmd.info.position;
                             it->speed = cmd.info.speed;
+                            it->ipAddress = cmd.info.ipAddress;
+                            it->port = cmd.info.port;
                             std::cout << "Updated vehicle " << it->id << " info\n";
                         }
                     } else {
@@ -227,9 +244,18 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                         std::cout << "Removed vehicle " << cmd.info.id << " from platoon\n";
                     }
 
-                    // store follower address + heartbeat timestamp for joins/updates
-                    leader->followerAddrs_[cmd.info.id] = followerAddr;
-                    leader->lastHeartbeatTimes_[cmd.info.id] = nowMs();
+                    // Update ip/port/lastHeartbeat for the vehicle (if still present)
+                    {
+                        auto itr = std::find_if(
+                            leader->platoonState_.vehicles.begin(),
+                            leader->platoonState_.vehicles.end(),
+                            [&](const VehicleInfo& v){ return v.id == cmd.info.id; });
+                        if (itr != leader->platoonState_.vehicles.end()) {
+                            itr->ipAddress = followerAddr.sin_addr.s_addr;
+                            itr->port = followerAddr.sin_port;
+                            itr->lastHeartbeatMs = nowMs();
+                        }
+                    }
 
                     pthread_mutex_unlock(&leader->mutex_);
                     // Broadcast updated platoon membership
@@ -406,6 +432,7 @@ void* LeadingVehicle::heartbeatThreadEntry(void* arg) {
     LeadingVehicle* leader = static_cast<LeadingVehicle*>(arg);
     const int HEARTBEAT_INTERVAL_MS = 1000; // Check every second
     const int TIMEOUT_MS = 3000; // Timeout for follower heartbeat
+
     while (leader->serverRunning_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(HEARTBEAT_INTERVAL_MS));
         std::int64_t currentTime = nowMs();
@@ -415,9 +442,7 @@ void* LeadingVehicle::heartbeatThreadEntry(void* arg) {
         for (auto it = leader->platoonState_.vehicles.begin(); it != leader->platoonState_.vehicles.end(); ) {
             if (it->id == leader->info_.id) { ++it; continue; } // skip leader
 
-            auto lastIt = leader->lastHeartbeatTimes_.find(it->id);
-            if (lastIt == leader->lastHeartbeatTimes_.end() ||
-                (currentTime - lastIt->second) > TIMEOUT_MS) {
+            if (it->lastHeartbeatMs == 0 || (currentTime - it->lastHeartbeatMs) > TIMEOUT_MS) {
                 std::cout << "[HEARTBEAT] Follower " << it->id << " timed out. Removing from platoon.\n";
                 toRemove.push_back(it->id);
                 it = leader->platoonState_.vehicles.erase(it);
@@ -425,11 +450,7 @@ void* LeadingVehicle::heartbeatThreadEntry(void* arg) {
                 ++it;
             }
         }
-        // Cleanup address + timestamp entries
-        for (int id : toRemove) {
-            leader->followerAddrs_.erase(id);
-            leader->lastHeartbeatTimes_.erase(id);
-        }
+        // (legacy maps removed; VehicleInfo entries already erased above)
         pthread_mutex_unlock(&leader->mutex_);
 
         if (!toRemove.empty()) leader->sendPlatoonState();
@@ -453,14 +474,17 @@ void* LeadingVehicle::sendStatusThreadEntry(void* arg) {
 
         // Send to all known follower addresses
         pthread_mutex_lock(&leader->mutex_);
-        for (const auto &p : leader->followerAddrs_) {
-            int fid = p.first;
-            if (fid == leader->info_.id) continue;
-            const struct sockaddr_in dest = p.second;
+        for (const auto &v : leader->platoonState_.vehicles) {
+            if (v.id == leader->info_.id) continue; // skip leader
+            if (v.ipAddress == 0 || v.port == 0) continue; // no address known
+            struct sockaddr_in dest{};
+            dest.sin_family = AF_INET;
+            dest.sin_addr.s_addr = v.ipAddress;
+            dest.sin_port = v.port;
             ssize_t sentBytes = sendto(leader->serverSocket_, &status, sizeof(status), 0,
                                        (const struct sockaddr*)&dest, sizeof(dest));
             if (sentBytes < 0) {
-                std::cerr << "Failed to send status to follower " << fid << ": " << strerror(errno) << std::endl;
+                std::cerr << "Failed to send status to follower " << v.id << ": " << strerror(errno) << std::endl;
             }
         }
         pthread_mutex_unlock(&leader->mutex_);
@@ -489,10 +513,13 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
 
         // Send event message to all followers
         pthread_mutex_lock(&leader->mutex_);
-        for (const auto &p : leader->followerAddrs_) {
-            int fid = p.first;
-            if (fid == leader->info_.id) continue;
-            const struct sockaddr_in dest = p.second;
+        for (const auto &v : leader->platoonState_.vehicles) {
+            if (v.id == leader->info_.id) continue;
+            if (v.ipAddress == 0 || v.port == 0) continue;
+            struct sockaddr_in dest{};
+            dest.sin_family = AF_INET;
+            dest.sin_addr.s_addr = v.ipAddress;
+            dest.sin_port = v.port;
 
             ssize_t sentBytes = 0;
             switch (eventMsg.type)
@@ -501,9 +528,12 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
                     TrafficLightMessage tlMsg{};
                     tlMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
                     tlMsg.timestamp = eventMsg.timestamp;
-                    tlMsg.status = *(static_cast<TrafficLightStatus*>(eventMsg.eventData));
-                    std::cout << tlMsg.status << std::endl;
-                    // std::memcpy(&eventMsg, &tlMsg, sizeof(tlMsg));
+                    // eventMsg.eventData is legacy pointer; if used, ignore — instead include type tag in EventMessage
+                    // For now, if eventMsg.type == TRAFFIC_LIGHT_ALERT we assume eventMsg.timestamp encodes the event time
+                    // and leader state indicates RED/GREEN via leader->getState() or via event queue metadata.
+                    // Here we send a RED/ GREEN based on eventMsg.timestamp usage is not ideal — recommend refactoring EventMessage.
+                    // Fallback: send a simple TrafficLightMessage with RED when leader state is STOPPING, GREEN when STARTING.
+                    tlMsg.status = (leader->getState() == STOPPING) ? LIGHT_RED : LIGHT_GREEN;
                     sentBytes = sendto(leader->serverSocket_, &tlMsg, sizeof(tlMsg), 0,
                                             (const struct sockaddr*)&dest, sizeof(dest));
                     break;
@@ -513,7 +543,7 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
             }
 
             if (sentBytes < 0) {
-                std::cerr << "Failed to send event to follower " << fid << ": " << strerror(errno) << std::endl;
+                std::cerr << "Failed to send event to follower " << v.id << ": " << strerror(errno) << std::endl;
             }
         }
         pthread_mutex_unlock(&leader->mutex_);

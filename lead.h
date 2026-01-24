@@ -18,7 +18,6 @@
 #include <cstdint>
 #include <string>
 #include "vehicle.h"
-#include <map>
 #include <netinet/in.h>
 #include <queue>
 #include "message.h"
@@ -50,10 +49,6 @@ private:
 
     // Mutex for platoon state
     pthread_mutex_t mutex_;
-
-    // Per-follower network info + heartbeat timestamps
-    std::map<int, struct sockaddr_in> followerAddrs_;     // followerId -> sockaddr
-    std::map<int, std::int64_t> lastHeartbeatTimes_;      // followerId -> last seen ms
 
     // Server socket
     int serverSocket_;

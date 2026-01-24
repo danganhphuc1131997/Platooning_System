@@ -28,8 +28,8 @@ struct EventMessage {
 // Traffic light status alert data
 struct TrafficLightMessage {
     MessageType type;       // Message type
-    std::int64_t timestamp; // Timestamp of the event
     std::uint8_t status; // LIGHT_RED or LIGHT_GREEN
+    std::int64_t timestamp; // Timestamp of the event
 };
 
 // Structure for status update message
@@ -45,6 +45,18 @@ struct CoupleCommandMessage {
     VehicleInfo info;       // Vehicle information
     bool couple;            // true to couple, false to decouple
     std::int64_t timestamp; // Timestamp of the message
+};
+
+// Maximum vehicles in a platoon for fixed-size wire message
+constexpr int MAX_PLATOON_VEHICLES = 16;
+
+// Structure for platoon state broadcast (leader -> followers)
+struct PlatoonStateMessage {
+    MessageType type;                         // PLATOON_STATE
+    int leaderId;                             // Leader vehicle ID
+    int vehicleCount;                         // Number of vehicles in platoon
+    VehicleInfo vehicles[MAX_PLATOON_VEHICLES]; // Fixed-size array (sorted by position descending: leader first)
+    std::int64_t timestamp;                   // Timestamp of the message
 };
 
 #endif // MESSAGE_H

@@ -18,10 +18,13 @@ enum VehicleMode : std::uint8_t {
 
 // Structure to hold vehicle state information
 struct VehicleInfo {
-    int id; // Unique vehicle ID
-    double position; // in meters
-    double speed; // in m/s
+    int id;             // Unique vehicle ID
+    double position;    // in meters
+    double speed;       // in m/s
     std::uint8_t mode;  // LeaderMode or FollowerMode
+    uint32_t ipAddress; // IP address (network byte order)
+    uint16_t port;      // UDP port number
+        std::int64_t lastHeartbeatMs; // monotonic timestamp (ms) of last heartbeat
     // TODO: Add more if needed: obstacleDetected, clock, etc.
 };
 
@@ -32,4 +35,5 @@ struct PlatoonState {
     int followerCount; // Number of followers
     // TODO: Add metadata: timestamp, etc.
 };
+
 #endif // VEHICLE_H

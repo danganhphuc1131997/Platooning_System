@@ -40,6 +40,9 @@ public:
 
 private:
     VehicleInfo info_;
+    VehicleInfo frontVehicleInfo_;
+    VehicleInfo rearVehicleInfo_;
+
     FollowerState state_;
     std::atomic<bool> clientRunning_;
 
