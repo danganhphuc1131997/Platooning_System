@@ -13,10 +13,11 @@
 
 // Message types
 enum MessageType : std::uint8_t {
-    STATUS_UPDATE = 0,   // Vehicle status update
-    COUPLE_COMMAND = 1,  // Command to couple/decouple vehicles
-    PLATOON_STATE = 2,   // Platoon state broadcast
-    TRAFFIC_LIGHT_ALERT = 3   // Traffic alert message
+    STATUS_UPDATE = 0,         // Vehicle status update
+    COUPLE_COMMAND = 1,        // Command to couple/decouple vehicles
+    PLATOON_STATE = 2,         // Platoon state broadcast
+    TRAFFIC_LIGHT_ALERT = 3,   // Traffic alert message
+    LEAVE_PLATOON = 4          // Leave platoon command
 };
 
 struct EventMessage {
@@ -29,6 +30,13 @@ struct EventMessage {
 struct TrafficLightMessage {
     MessageType type;       // Message type
     std::uint8_t status;    // LIGHT_RED or LIGHT_GREEN
+    std::int64_t timestamp; // Timestamp of the event
+};
+
+// Leave platoon command data
+struct LeavePlatoonMessage {
+    MessageType type;       // Message type
+    int vehicleId;          // ID of vehicle leaving platoon
     std::int64_t timestamp; // Timestamp of the event
 };
 

@@ -27,6 +27,13 @@ LeadingVehicle::LeadingVehicle(int id, double initialPosition, double initialSpe
     info_.port = htons(SERVER_PORT);
     platoonState_.leaderId = id;
 
+    std::cout << "\n========================================\n";
+    std::cout << "NEW LEADER INITIALIZED\n";
+    std::cout << "Leader ID: " << id << "\n";
+    std::cout << "Position: " << initialPosition << " m\n";
+    std::cout << "Speed: " << initialSpeed << " m/s\n";
+    std::cout << "========================================\n\n";
+
     // Create event queue
     pthread_mutex_init(&eventMutex_, nullptr);
     pthread_cond_init(&eventCv_, nullptr);
@@ -84,6 +91,17 @@ void LeadingVehicle::createServerSocket() {
         // Non-fatal: print warning but continue
         std::cerr << "Warning: failed to enable SO_BROADCAST\n";
     }
+    
+    // Set SO_REUSEADDR and SO_REUSEPORT for quick restart
+    int opt = 1;
+    setsockopt(serverSocket_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(serverSocket_, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+    
+    // Set SO_LINGER to force immediate close without TIME_WAIT
+    struct linger sl;
+    sl.l_onoff = 1;
+    sl.l_linger = 0;
+    setsockopt(serverSocket_, SOL_SOCKET, SO_LINGER, &sl, sizeof(sl));
 
     // Bind the socket to the server address
     struct sockaddr_in serverAddr{};
@@ -346,6 +364,30 @@ void* LeadingVehicle::eventSimulationThreadEntry(void* arg) {
 
                     break;
                 }
+                case 4: {
+                    // Leave Platoon
+                    std::cout << "\n========================================\n";
+                    std::cout << "LEADER DEPARTURE INITIATED\n";
+                    std::cout << "Leader ID " << leader->info_.id << " is leaving the platoon\n";
+                    std::cout << "Next vehicle will become new leader\n";
+                    std::cout << "========================================\n\n";
+                    
+                    EventMessage eventMsg{};
+                    LeavePlatoonMessage leaveMsg{};
+                    leaveMsg.type = MessageType::LEAVE_PLATOON;
+                    leaveMsg.vehicleId = leader->info_.id;
+                    leaveMsg.timestamp = nowMs();
+
+                    eventMsg.type = MessageType::LEAVE_PLATOON;
+                    eventMsg.eventData = &leaveMsg;
+                    eventMsg.timestamp = nowMs();
+
+                    pthread_mutex_lock(&leader->eventMutex_);
+                    leader->eventQueue_.push(eventMsg);
+                    pthread_cond_signal(&leader->eventCv_);
+                    pthread_mutex_unlock(&leader->eventMutex_);
+                    break;
+                }
                 case 0: { // Exit
                     leader->serverRunning_ = false;
                     break;
@@ -552,12 +594,63 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
                                            (const struct sockaddr*)&dest, sizeof(dest));
                         break;
                     }
+                    case LEAVE_PLATOON: {
+                        // Send leave platoon message to rear vehicle (next leader)
+                        LeavePlatoonMessage leaveMsg{};
+                        leaveMsg.type = MessageType::LEAVE_PLATOON;
+                        leaveMsg.vehicleId = leader->info_.id;
+                        leaveMsg.timestamp = eventMsg.timestamp;
+                        sentBytes = sendto(leader->serverSocket_, &leaveMsg, sizeof(leaveMsg), 0,
+                                           (const struct sockaddr*)&dest, sizeof(dest));
+                        
+                        if (sentBytes > 0) {
+                            std::cout << "[SYSTEM] Notified vehicle " << rear.id << " to become new leader.\n";
+                        }
+                        
+                        // Give time for message to be delivered
+                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                        
+                        // Update platoon state to remove self
+                        leader->platoonState_.vehicles.erase(
+                            std::remove_if(
+                                leader->platoonState_.vehicles.begin(),
+                                leader->platoonState_.vehicles.end(),
+                                [&](const VehicleInfo& v){ return v.id == leader->info_.id; }),
+                            leader->platoonState_.vehicles.end());
+                        
+                        // Send final platoon state update
+                        leader->sendPlatoonState();
+                        
+                        std::cout << "[SYSTEM] Closing socket and shutting down...\n";
+                        
+                        // Close socket immediately to release port
+                        ::shutdown(leader->serverSocket_, SHUT_RDWR);
+                        ::close(leader->serverSocket_);
+                        leader->serverSocket_ = -1;
+                        
+                        std::cout << "[SYSTEM] Leader departure complete.\n";
+                        break;
+                    }
                     default:
                         break;
                 }
 
                 if (sentBytes < 0) {
                     std::cerr << "Failed to send event to rear vehicle " << rear.id << ": " << strerror(errno) << std::endl;
+                } else {
+                    switch (eventMsg.type)
+                    {
+                    case LEAVE_PLATOON: {
+                        // After sending leave platoon, stop the leader server
+                        std::cout << "[SYSTEM] Stopping leader server...\n";
+                        leader->serverRunning_ = false;
+                        pthread_cond_broadcast(&leader->eventCv_);
+                        break;
+                    }
+
+                    default:
+                        break;
+                    }
                 }
             }
         }
@@ -611,7 +704,7 @@ int main(int argc, char** argv) {
             std::cout << "1: Obstacle detected\n";
             std::cout << "2: Traffic light RED\n";
             std::cout << "3: Traffic light GREEN\n";
-            std::cout << "4: Cut-in vehicle alert\n";
+            std::cout << "4: Leave Platoon\n";
             std::cout << "0: Exit\n";
             std::cout << "Enter choice: ";
             std::cin >> choice;
@@ -627,6 +720,17 @@ int main(int argc, char** argv) {
     int id = LEADER_INITIAL_ID;
     double baseSpeed = LEADER_INITIAL_SPEED;
     double initialPos = LEADER_INITIAL_POSITION;
+
+    // Accept id, position, and speed from command line (for transition from follower)
+    if (argc >= 2) {
+        id = std::stoi(argv[1]);
+    }
+    if (argc >= 3) {
+        initialPos = std::stod(argv[2]);
+    }
+    if (argc >= 4) {
+        baseSpeed = std::stod(argv[3]);
+    }
 
     try {
         // Create FIFO
