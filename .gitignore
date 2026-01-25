@@ -15,6 +15,8 @@ Makefile.user
 # Executable binaries for follow and lead
 follow
 lead
+follower_input
+leader_input
 
 # Object and binary files
 *.o
