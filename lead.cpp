@@ -18,7 +18,7 @@
 
 // Constructor
 LeadingVehicle::LeadingVehicle(int id, double initialPosition, double initialSpeed)
-    : state_(NORMAL), serverRunning_(false) {
+    : state_(NORMAL), serverRunning_(false), originalSpeed_(initialSpeed), energyAlertSent_(false), stopTimeMs_(0), gasStationStop_(false) {
     info_.id = id;
     info_.position = initialPosition;
     info_.speed = initialSpeed;
@@ -26,6 +26,9 @@ LeadingVehicle::LeadingVehicle(int id, double initialPosition, double initialSpe
     info_.ipAddress = inet_addr("127.0.0.1");
     info_.port = htons(SERVER_PORT);
     platoonState_.leaderId = id;
+
+    // Initialize matrix clock (use vehicle ID as process ID)
+    matrixClock_.init(id, MAX_PLATOON_VEHICLES);
 
     // Create event queue
     pthread_mutex_init(&eventMutex_, nullptr);
@@ -63,6 +66,9 @@ void LeadingVehicle::stopServer() {
 // Set leader state
 void LeadingVehicle::setState(LeaderState newState) {
     state_ = newState;
+    if (newState == STOPPED) {
+        stopTimeMs_ = nowMs();
+    }
 }
 
 // Get leader state
@@ -102,6 +108,10 @@ void LeadingVehicle::sendPlatoonState() {
     psMsg.type = MessageType::PLATOON_STATE;
     psMsg.timestamp = nowMs();
 
+    // Update matrix clock on send
+    matrixClock_.onSend();
+    psMsg.clock = matrixClock_;
+
     pthread_mutex_lock(&mutex_);
     psMsg.leaderId = platoonState_.leaderId;
 
@@ -137,13 +147,14 @@ void LeadingVehicle::sendPlatoonState() {
 // Static method: Thread entry for receiving messages
 void* LeadingVehicle::recvThreadEntry(void* arg) {
     LeadingVehicle* leader = static_cast<LeadingVehicle*>(arg);
-    char buffer[1024];
+    const size_t BUFFER_SIZE = 4096;
+    char* buffer = new char[BUFFER_SIZE];
 
     while (leader->serverRunning_) {
         // Receive messages from followers
         struct sockaddr_in followerAddr{};
         socklen_t addrLen = sizeof(followerAddr);
-        ssize_t recvLen = recvfrom(leader->serverSocket_, buffer, sizeof(buffer), 0,
+        ssize_t recvLen = recvfrom(leader->serverSocket_, buffer, BUFFER_SIZE, 0,
                                    (struct sockaddr*)&followerAddr, &addrLen);
 
         if (recvLen >= 1) {
@@ -161,6 +172,9 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                     // Safe copy from network buffer into local struct
                     StatusUpdateMessage status;
                     std::memcpy(&status, buffer, sizeof(status));
+
+                    // Merge matrix clock from received message
+                    leader->matrixClock_.onReceive(status.clock);
 
                     // Protect platoonState_ when modifying
                     pthread_mutex_lock(&leader->mutex_);
@@ -203,6 +217,9 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                     // Safe copy from network buffer into local struct
                     CoupleCommandMessage cmd;
                     std::memcpy(&cmd, buffer, sizeof(cmd));
+
+                    // Merge matrix clock from received message
+                    leader->matrixClock_.onReceive(cmd.clock);
 
                     std::cout << "Received couple command from vehicle "
                             << cmd.info.id
@@ -282,12 +299,58 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                     }
                     break;
                 }
-                default:
-                    std::cout << "Unknown message type received: " << static_cast<int>(msgType) << std::endl;
+                case ENERGY_DEPLETION_ALERT: {
+                    if (static_cast<size_t>(recvLen) < sizeof(EnergyDepletionMessage)) {
+                        std::cerr << "Received short ENERGY_DEPLETION_ALERT (" << recvLen << " bytes)\n";
+                        break;
+                    }
+                    EnergyDepletionMessage energyMsg;
+                    std::memcpy(&energyMsg, buffer, sizeof(energyMsg));
+                    std::cout << "Received energy low alert from vehicle " << energyMsg.vehicleId << std::endl;
+
+                    // Gradually reduce leader's speed by 40% to allow followers to conserve energy
+                    leader->setState(LOW_ENERGY);
+                    leader->targetSpeed_ = leader->originalSpeed_ * 0.6;
+                    std::cout << "Leader will gradually reduce speed to " << leader->targetSpeed_ << " m/s due to low energy alert\n";
+
+                    // Followers will adjust their speed in next status update
                     break;
+                }
+                case ENERGY_RESTORED: {
+                    if (static_cast<size_t>(recvLen) < sizeof(EnergyRestoredMessage)) {
+                        std::cerr << "Received short ENERGY_RESTORED (" << recvLen << " bytes)\n";
+                        break;
+                    }
+                    EnergyRestoredMessage erMsg;
+                    std::memcpy(&erMsg, buffer, sizeof(erMsg));
+                    std::cout << "Received energy restored from vehicle " << erMsg.vehicleId << std::endl;
+
+                    // Stop at gas station
+                    leader->setState(STOPPING);
+                    std::cout << "Leader stopping at gas station\n";
+                    break;
+                }
+                case GAS_STATION_ALERT: {
+                    if (static_cast<size_t>(recvLen) < sizeof(GasStationMessage)) {
+                        std::cerr << "Received short GAS_STATION_ALERT (" << recvLen << " bytes)\n";
+                        break;
+                    }
+                    GasStationMessage gsMsg;
+                    std::memcpy(&gsMsg, buffer, sizeof(gsMsg));
+                    std::cout << "Received gas station alert from vehicle " << gsMsg.vehicleId << std::endl;
+
+                    // Stop at gas station
+                    leader->setState(STOPPING);
+                    std::cout << "Leader stopping at gas station\n";
+                    break;
+                }
+                default: {
+                    break;
+                }
             }
         }
     }
+    delete[] buffer;
     return nullptr;
 }
 
@@ -346,6 +409,33 @@ void* LeadingVehicle::eventSimulationThreadEntry(void* arg) {
 
                     break;
                 }
+                case 4: {
+                    // Return to normal speed
+                    leader->setState(NORMAL);
+                    leader->targetSpeed_ = leader->originalSpeed_;
+                    break;
+                }
+                case 5: {
+                    // Run out of energy
+                    leader->targetSpeed_ = leader->info_.speed * 0.6;
+                    leader->setState(LOW_ENERGY);
+                    leader->energyAlertSent_ = false; // Allow sending alert in status thread
+                    break;
+                }
+                case 6: {
+                    // Restore energy
+                    leader->gasStationStop_ = true; // Mark as gas station stop
+                    leader->setState(STOPPING); // Stop at gas station
+                    // Send gas station alert to followers
+                    EventMessage eventMsg{};
+                    eventMsg.type = MessageType::GAS_STATION_ALERT;
+                    eventMsg.timestamp = nowMs();
+                    pthread_mutex_lock(&leader->eventMutex_);
+                    leader->eventQueue_.push(eventMsg);
+                    pthread_cond_signal(&leader->eventCv_);
+                    pthread_mutex_unlock(&leader->eventMutex_);
+                    break;
+                }
                 case 0: { // Exit
                     leader->serverRunning_ = false;
                     break;
@@ -372,6 +462,18 @@ void* LeadingVehicle::displayThreadEntry(void* arg) {
         std::cout << "ID: " << leader->info_.id
                   << "  Position: " << leader->info_.position
                   << "  Speed: " << leader->info_.speed << "\n";
+        // Display full matrix clock (what leader knows about all processes' views)
+        std::cout << "Matrix Clock:\n";
+        for (const auto& vi : leader->platoonState_.vehicles) {
+            std::cout << "  P" << vi.id << ": [";
+            bool first = true;
+            for (const auto& vj : leader->platoonState_.vehicles) {
+                if (!first) std::cout << ", ";
+                std::cout << leader->matrixClock_.matrix[vi.id][vj.id];
+                first = false;
+            }
+            std::cout << "]\n";
+        }
         std::cout << "Platoon vehicles:\n";
         for (const auto &v : leader->platoonState_.vehicles) {
             std::cout << "Vehicle ID: " << v.id
@@ -394,12 +496,10 @@ void* LeadingVehicle::runThreadEntry(void* arg) {
     const double accel = 8;    // m/s^2 when starting
     const double decel = 12;   // m/s^2 when stopping
 
-    // snapshot desired cruising speed (can be changed elsewhere)
-    double targetSpeed = leader->info_.speed;
-
     while (leader->serverRunning_) {
         // Update kinematics according to the leader state machine
         LeaderState st = leader->getState();
+        double targetSpeed = (st == NORMAL) ? leader->originalSpeed_ : leader->info_.speed;
         switch (st) {
             case NORMAL:
                 if (leader->info_.speed < targetSpeed) {
@@ -417,11 +517,24 @@ void* LeadingVehicle::runThreadEntry(void* arg) {
                 break;
             case STOPPED:
                 leader->info_.speed = 0.0;
+                if (leader->gasStationStop_ && leader->nowMs() - leader->stopTimeMs_ > 3000) { // 3 seconds for gas station
+                    std::cout << "Energy restored.\n";
+                    leader->gasStationStop_ = false; // Reset flag
+                    leader->setState(STARTING);
+                }
                 break;
             case STARTING:
                 leader->info_.speed = std::min(targetSpeed, leader->info_.speed + accel * dt);
                 if (leader->info_.speed >= targetSpeed - 1e-6) {
                     leader->setState(NORMAL);
+                }
+                break;
+            case LOW_ENERGY:
+                targetSpeed = leader->targetSpeed_;
+                if (leader->info_.speed > targetSpeed) {
+                    leader->info_.speed = std::max(targetSpeed, leader->info_.speed - decel * dt);
+                } else if (leader->info_.speed < targetSpeed) {
+                    leader->info_.speed = std::min(targetSpeed, leader->info_.speed + accel * dt);
                 }
                 break;
             default:
@@ -483,6 +596,9 @@ void* LeadingVehicle::sendStatusThreadEntry(void* arg) {
 
     const int STATUS_INTERVAL_MS = 100; // Send status every 100 ms
     while (leader->serverRunning_) {
+        // Update matrix clock on send
+        leader->matrixClock_.onSend();
+
         // Build status message
         StatusUpdateMessage status;
         status.type = MessageType::STATUS_UPDATE;
@@ -490,6 +606,7 @@ void* LeadingVehicle::sendStatusThreadEntry(void* arg) {
         status.info.position = leader->info_.position;
         status.info.speed = leader->info_.speed;
         status.info.mode = leader->info_.mode;
+        status.clock = leader->matrixClock_;
         status.timestamp = nowMs();
 
         // Send to all known follower addresses
@@ -552,6 +669,15 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
                                            (const struct sockaddr*)&dest, sizeof(dest));
                         break;
                     }
+                    case GAS_STATION_ALERT: {
+                        GasStationMessage gsMsg{};
+                        gsMsg.type = MessageType::GAS_STATION_ALERT;
+                        gsMsg.vehicleId = leader->info_.id;
+                        gsMsg.timestamp = eventMsg.timestamp;
+                        sentBytes = sendto(leader->serverSocket_, &gsMsg, sizeof(gsMsg), 0,
+                                           (const struct sockaddr*)&dest, sizeof(dest));
+                        break;
+                    }
                     default:
                         break;
                 }
@@ -611,7 +737,9 @@ int main(int argc, char** argv) {
             std::cout << "1: Obstacle detected\n";
             std::cout << "2: Traffic light RED\n";
             std::cout << "3: Traffic light GREEN\n";
-            std::cout << "4: Cut-in vehicle alert\n";
+            std::cout << "4: Return to normal speed\n";
+            std::cout << "5: Run out of energy\n";
+            std::cout << "6: Restore energy\n";
             std::cout << "0: Exit\n";
             std::cout << "Enter choice: ";
             std::cin >> choice;

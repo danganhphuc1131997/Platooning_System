@@ -16,7 +16,10 @@ enum MessageType : std::uint8_t {
     STATUS_UPDATE = 0,   // Vehicle status update
     COUPLE_COMMAND = 1,  // Command to couple/decouple vehicles
     PLATOON_STATE = 2,   // Platoon state broadcast
-    TRAFFIC_LIGHT_ALERT = 3   // Traffic alert message
+    TRAFFIC_LIGHT_ALERT = 3,   // Traffic alert message
+    ENERGY_DEPLETION_ALERT = 4,  // Energy depletion alert
+    ENERGY_RESTORED = 5,  // Energy restored message
+    GAS_STATION_ALERT = 6  // Gas station alert
 };
 
 struct EventMessage {
@@ -32,10 +35,32 @@ struct TrafficLightMessage {
     std::int64_t timestamp; // Timestamp of the event
 };
 
+// Energy depletion alert data
+struct EnergyDepletionMessage {
+    MessageType type;       // Message type
+    int vehicleId;          // ID of the vehicle running out of energy
+    std::int64_t timestamp; // Timestamp of the event
+};
+
+// Energy restored data
+struct EnergyRestoredMessage {
+    MessageType type;       // Message type
+    int vehicleId;          // ID of the vehicle restoring energy
+    std::int64_t timestamp; // Timestamp of the event
+};
+
+// Gas station alert data
+struct GasStationMessage {
+    MessageType type;       // Message type
+    int vehicleId;          // ID of the vehicle at gas station
+    std::int64_t timestamp; // Timestamp of the event
+};
+
 // Structure for status update message
 struct StatusUpdateMessage {
     MessageType type;       // Message type
     VehicleInfo info;       // Vehicle information
+    MatrixClock clock;      // Matrix clock
     std::int64_t timestamp; // Timestamp of the message
 };
 
@@ -44,6 +69,7 @@ struct CoupleCommandMessage {
     MessageType type;       // Message type
     VehicleInfo info;       // Vehicle information
     bool couple;            // true to couple, false to decouple
+    MatrixClock clock;      // Matrix clock
     std::int64_t timestamp; // Timestamp of the message
 };
 
@@ -56,6 +82,7 @@ struct PlatoonStateMessage {
     int leaderId;                             // Leader vehicle ID
     int vehicleCount;                         // Number of vehicles in platoon
     VehicleInfo vehicles[MAX_PLATOON_VEHICLES]; // Fixed-size array (sorted by position descending: leader first)
+    MatrixClock clock;                        // Matrix clock
     std::int64_t timestamp;                   // Timestamp of the message
 };
 
