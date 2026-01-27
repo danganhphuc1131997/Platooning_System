@@ -27,7 +27,8 @@ enum LeaderState : std::uint8_t {
     ERROR,      // Error state
     STOPPING,   // Braking to stop
     STOPPED,    // Stopped
-    STARTING    // Starting from stop
+    STARTING,   // Starting from stop
+    LOW_ENERGY  // Low energy, reducing speed
 };
 
 class LeadingVehicle {
@@ -45,6 +46,11 @@ private:
     VehicleInfo info_;
     LeaderState state_;
     std::atomic<bool> serverRunning_;
+    double targetSpeed_; // Target speed for gradual changes
+    double originalSpeed_; // Original speed before reduction
+    bool energyAlertSent_; // Flag to track if energy depletion alert has been sent
+    std::int64_t stopTimeMs_; // Time when stopped for auto start
+    bool gasStationStop_; // Flag to indicate if current stop is for gas station
     PlatoonState platoonState_; // Current state of the platoon
 
     // Mutex for platoon state

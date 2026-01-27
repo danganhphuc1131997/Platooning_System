@@ -18,7 +18,7 @@
 FollowingVehicle::FollowingVehicle(int id,
                                  double initialSpeed,
                                  double initialPosition)
-    : state_(NORMAL), clientRunning_(false), clientSocket_(-1) {
+    : state_(NORMAL), clientRunning_(false), energyAlertSent_(false), clientSocket_(-1) {
     info_.id = id;
     info_.position = initialPosition;
     info_.speed = std::round(initialSpeed);
@@ -148,7 +148,8 @@ FollowerState FollowingVehicle::getState() const {
 // Receive messages (unconnected UDP - can receive from leader and other vehicles)
 void* FollowingVehicle::recvThreadEntry(void* arg) {
     FollowingVehicle* follower = static_cast<FollowingVehicle*>(arg);
-    char buffer[1024];
+    const size_t BUFFER_SIZE = 4096;
+    char* buffer = new char[BUFFER_SIZE];
 
     while (follower->clientRunning_) {
         struct sockaddr_in senderAddr{};
@@ -232,6 +233,28 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     }
                     break;
                 }
+                case ENERGY_DEPLETION_ALERT: {
+                    if (static_cast<size_t>(recvLen) < sizeof(EnergyDepletionMessage)) break;
+                    EnergyDepletionMessage energyMsg;
+                    std::memcpy(&energyMsg, buffer, sizeof(energyMsg));
+                    std::cout << "Received energy depletion alert from vehicle " << energyMsg.vehicleId << std::endl;
+
+                    // If it's from the front vehicle, perhaps adjust behavior, but for now just log
+                    // Forward to rear vehicle
+                    pthread_mutex_lock(&follower->leaderMutex_);
+                    VehicleInfo rear = follower->rearVehicleInfo_;
+                    pthread_mutex_unlock(&follower->leaderMutex_);
+
+                    if (rear.id != -1 && rear.ipAddress != 0 && rear.port != 0) {
+                        struct sockaddr_in rearAddr{};
+                        rearAddr.sin_family = AF_INET;
+                        rearAddr.sin_addr.s_addr = rear.ipAddress;
+                        rearAddr.sin_port = rear.port;
+                        sendto(follower->clientSocket_, &energyMsg, sizeof(energyMsg), 0,
+                               (const struct sockaddr*)&rearAddr, sizeof(rearAddr));
+                    }
+                    break;
+                }
                 case PLATOON_STATE: {
                     if (static_cast<size_t>(recvLen) < sizeof(PlatoonStateMessage)) break;
                     PlatoonStateMessage psMsg;
@@ -269,13 +292,14 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     }
                     pthread_mutex_unlock(&follower->leaderMutex_);
                     break;
-                }
+                }                
                 default:
                     // ignore other message types for now
                     break;
             }
         }
     }
+    delete[] buffer;
     return nullptr;
 }
 
@@ -439,6 +463,18 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
                 follower->info_.speed = std::round(std::min(leaderSp + CATCH_UP_SPEED_BONUS,
                                                            follower->info_.speed + accel * dt));
                 break;
+            case LOW_ENERGY:
+                // Continue following but cap speed at target speed
+                if (gap < SAFE_DISTANCE) {
+                    follower->setState(STOPPING);
+                } else if (gap > (SAFE_DISTANCE + 20.0)) {
+                    follower->setState(CATCHING_UP);
+                } else {
+                    // Maintain speed - match the vehicle in front, but don't exceed target speed
+                    double desiredSpeed = std::min(refSp, follower->targetSpeed_);
+                    follower->info_.speed = desiredSpeed;
+                }
+                break;
             default:
                 break;
         }
@@ -466,6 +502,23 @@ void* FollowingVehicle::sendStatusThreadEntry(void* arg) {
                                    (const struct sockaddr*)&follower->leaderAddr_, sizeof(follower->leaderAddr_));
         if (sentBytes < 0) {
             std::cerr << "Failed to send status to leader: " << strerror(errno) << std::endl;
+        }
+
+        // Send energy alert if needed
+        if (!follower->energyAlertSent_ && follower->getState() == LOW_ENERGY && follower->info_.speed <= follower->targetSpeed_ + 0.1) {
+            EnergyDepletionMessage energyMsg{};
+            energyMsg.type = MessageType::ENERGY_DEPLETION_ALERT;
+            energyMsg.vehicleId = follower->info_.id;
+            energyMsg.timestamp = nowMs();
+
+            ssize_t energySent = sendto(follower->clientSocket_, &energyMsg, sizeof(energyMsg), 0,
+                                        (const struct sockaddr*)&follower->leaderAddr_, sizeof(follower->leaderAddr_));
+            if (energySent < 0) {
+                std::cerr << "Failed to send energy depletion alert: " << strerror(errno) << std::endl;
+            } else {
+                std::cout << "Sent energy low alert (id=" << energyMsg.vehicleId << ", energy=" << follower->info_.energy << ")\n";
+                follower->energyAlertSent_ = true;
+            }
         }
 
         // Also send to rear vehicle if known
@@ -518,6 +571,7 @@ void* FollowingVehicle::displayThreadEntry(void* arg) {
             case CATCHING_UP: stateStr = "CATCHING_UP"; break;
             case STOPPING_FOR_RED_LIGHT: stateStr = "STOPPING_FOR_RED_LIGHT"; break;
             case DECOUPLED: stateStr = "DECOUPLED"; break;
+            case LOW_ENERGY: stateStr = "LOW_ENERGY"; break;
             default: stateStr = "UNKNOWN"; break;
         }
         std::cout << "\033[2J\033[H"; // clear screen + home
@@ -609,6 +663,14 @@ void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
                 tlMsg.status = LIGHT_GREEN;
                 follower->setState(STARTING);
                 break;
+            case 3: // Run out of energy
+                // Set energy to 0, reduce speed to 60%, send alert after reaching target
+                follower->info_.energy = 0.0;
+                follower->targetSpeed_ = follower->info_.speed * 0.6;
+                follower->setState(LOW_ENERGY);
+                follower->energyAlertSent_ = false; // Allow sending alert in status thread
+                // Skip sending tlMsg for energy event
+                break;
             default:
                 continue; // Skip unknown events
         }
@@ -662,12 +724,13 @@ int main(int argc, char* argv[]) {
             std::cout << "\n[FOLLOWER " << followerId << " EVENT INPUT]\n";
             std::cout << "1: Traffic light RED\n";
             std::cout << "2: Traffic light GREEN\n";
-            std::cout << "3: Set delay after next GREEN (seconds)\n";
+            std::cout << "3: Run out of energy\n";
+            std::cout << "4: Set delay after next GREEN (seconds)\n";
             std::cout << "0: Exit\n";
             std::cout << "Enter choice: ";
             std::cin >> choice;
 
-            if (choice == 3) {
+            if (choice == 4) {
                 int sec = 0;
                 std::cout << "Delay seconds: ";
                 std::cin >> sec;

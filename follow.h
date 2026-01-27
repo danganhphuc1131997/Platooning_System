@@ -27,7 +27,8 @@ enum FollowerState : std::uint8_t {
     STARTING,               // Starting from stop
     CATCHING_UP,            // Speeding up to catch leader
     STOPPING_FOR_RED_LIGHT, // Stopping for red light
-    DECOUPLED               // Temporarily decoupled from platoon (left behind)
+    DECOUPLED,              // Temporarily decoupled from platoon (left behind)
+    LOW_ENERGY              // Low energy, reduced speed
 };
 class FollowingVehicle {
 public:
@@ -48,6 +49,9 @@ private:
 
     FollowerState state_;
     std::atomic<bool> clientRunning_;
+
+    bool energyAlertSent_; // Flag to send energy alert only once
+    double targetSpeed_; // Target speed for gradual changes
 
     PlatoonState platoonState_; // Current state of the platoon
     
