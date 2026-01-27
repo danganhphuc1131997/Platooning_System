@@ -147,7 +147,7 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
         // Receive messages from followers
         struct sockaddr_in followerAddr{};
         socklen_t addrLen = sizeof(followerAddr);
-        ssize_t recvLen = recvfrom(leader->serverSocket_, buffer, sizeof(buffer), 0,
+        ssize_t recvLen = recvfrom(leader->serverSocket_, buffer, BUFFER_SIZE, 0,
                                    (struct sockaddr*)&followerAddr, &addrLen);
 
         if (recvLen >= 1) {

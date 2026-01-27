@@ -23,6 +23,7 @@ FollowingVehicle::FollowingVehicle(int id,
     info_.position = initialPosition;
     info_.speed = std::round(initialSpeed);
     info_.mode = FollowerMode;
+    info_.energy = 100.0;  // Start with full energy
 
     // Initialize front/rear vehicle info as invalid (id = -1 means unknown)
     frontVehicleInfo_.id = -1;
@@ -154,7 +155,7 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
     while (follower->clientRunning_) {
         struct sockaddr_in senderAddr{};
         socklen_t addrLen = sizeof(senderAddr);
-        ssize_t recvLen = recvfrom(follower->clientSocket_, buffer, sizeof(buffer), 0,
+        ssize_t recvLen = recvfrom(follower->clientSocket_, buffer, BUFFER_SIZE, 0,
                                    (struct sockaddr*)&senderAddr, &addrLen);
         if (recvLen >= 1) {
             MessageType msgType = static_cast<MessageType>(buffer[0]);
@@ -670,7 +671,7 @@ void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
                 follower->setState(LOW_ENERGY);
                 follower->energyAlertSent_ = false; // Allow sending alert in status thread
                 // Skip sending tlMsg for energy event
-                break;
+                continue;
             default:
                 continue; // Skip unknown events
         }
