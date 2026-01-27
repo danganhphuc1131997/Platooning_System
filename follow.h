@@ -17,15 +17,17 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include "vehicle.h"
+#include "system_config.h"
 
 enum FollowerState : std::uint8_t {
-    NORMAL = 0,   // Normal following
-    ERROR,        // Error state
-    STOPPING,     // Braking to stop
-    STOPPED,      // Stopped
-    STARTING,     // Starting from stop,
-    CATCHING_UP,   // Speeding up to catch leader
-    STOPPING_FOR_RED_LIGHT // Stopping for red light
+    NORMAL = 0,             // Normal following
+    ERROR,                  // Error state
+    STOPPING,               // Braking to stop
+    STOPPED,                // Stopped
+    STARTING,               // Starting from stop
+    CATCHING_UP,            // Speeding up to catch leader
+    STOPPING_FOR_RED_LIGHT, // Stopping for red light
+    DECOUPLED               // Temporarily decoupled from platoon (left behind)
 };
 class FollowingVehicle {
 public:
@@ -63,6 +65,13 @@ private:
     pthread_mutex_t eventMutex_{};    // Protects eventQueue_
     pthread_cond_t eventCv_{};        // Signal when new event is available
 
+    // --- Traffic light + left-behind simulation ---
+    TrafficLightStatus trafficLight_{LIGHT_GREEN};
+    bool decoupled_{false};
+    bool delayAfterNextGreenArmed_{false};
+    int delayAfterNextGreenSec_{0};
+    std::int64_t delayedUntilMs_{0};
+
     // Timing
     static std::int64_t nowMs();
 
@@ -83,7 +92,7 @@ private:
     // Helpers
     void createClientSocket();
     void sendStatusToLeader();
-    void sendCoupleCommandToLeader();
+    void sendCoupleCommandToLeader(bool couple = true);
 };
 
 #endif // FOLLOW_H
