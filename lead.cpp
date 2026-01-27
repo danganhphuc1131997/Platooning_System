@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <string>
+#include <cmath>
 
 #define EVENT_FIFO "/tmp/leader_event_fifo"
 
@@ -122,6 +123,17 @@ void LeadingVehicle::sendPlatoonState() {
 
     pthread_mutex_lock(&mutex_);
     psMsg.leaderId = platoonState_.leaderId;
+
+    // Update leader info in platoonState before broadcasting
+    auto leaderIt = std::find_if(
+        platoonState_.vehicles.begin(),
+        platoonState_.vehicles.end(),
+        [this](const VehicleInfo& v){ return v.id == info_.id; });
+    if (leaderIt != platoonState_.vehicles.end()) {
+        leaderIt->position = info_.position;
+        leaderIt->speed = info_.speed;
+        leaderIt->mode = info_.mode;
+    }
 
     // Sort vehicles by position descending (leader first, then followers in order)
     std::vector<VehicleInfo> sorted = platoonState_.vehicles;
@@ -343,7 +355,7 @@ void* LeadingVehicle::eventSimulationThreadEntry(void* arg) {
                     pthread_mutex_unlock(&leader->eventMutex_);
 
                     // change leader state
-                    leader->setState(STOPPING);
+                    leader->setState(STOPPING_FOR_RED_LIGHT);
                     break;
                 }
                 
@@ -445,7 +457,7 @@ void* LeadingVehicle::runThreadEntry(void* arg) {
         switch (st) {
             case NORMAL:
                 if (leader->info_.speed < targetSpeed) {
-                    leader->info_.speed = std::min(targetSpeed, leader->info_.speed + accel * dt);
+                    leader->info_.speed = std::round(std::min(targetSpeed, leader->info_.speed + accel * dt));
                 } else if (leader->info_.speed > targetSpeed) {
                     leader->info_.speed = std::max(targetSpeed, leader->info_.speed - decel * dt);
                 }
@@ -457,11 +469,18 @@ void* LeadingVehicle::runThreadEntry(void* arg) {
                     leader->setState(STOPPED);
                 }
                 break;
+            case STOPPING_FOR_RED_LIGHT:
+                leader->info_.speed = std::max(0.0, leader->info_.speed - decel * dt);
+                if (leader->info_.speed <= 0.001) {
+                    leader->info_.speed = 0.0;
+                    leader->setState(STOPPED);
+                }
+                break;
             case STOPPED:
                 leader->info_.speed = 0.0;
                 break;
             case STARTING:
-                leader->info_.speed = std::min(targetSpeed, leader->info_.speed + accel * dt);
+                leader->info_.speed = std::round(std::min(targetSpeed, leader->info_.speed + accel * dt));
                 if (leader->info_.speed >= targetSpeed - 1e-6) {
                     leader->setState(NORMAL);
                 }

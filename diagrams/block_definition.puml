@@ -1,0 +1,72 @@
+@startuml
+title Truck Platooning - Block Definition Diagram (code-accurate)
+
+' External actors / services
+rectangle "Human Driver (HMI FIFO)" <<actor>> as HMI_FIFO
+rectangle "Other Vehicles / Environment" <<actor>> as Environment
+
+' Core node components mapped to code
+package "LeadingVehicle (lead.cpp)" {
+  rectangle "LeadingVehicle" <<block>> as LeadingVehicle
+  rectangle "serverSocket_ (UDP)" <<artifact>> as ServerSocket
+  rectangle "recvThreadEntry / recvThread_" <<block>> as LeaderRecvThread
+  rectangle "sendPlatoonState()" <<block>> as SendPlatoonState
+  rectangle "heartbeatThreadEntry" <<block>> as HeartbeatThread
+}
+
+package "FollowingVehicle (follow.cpp)" {
+  rectangle "FollowingVehicle" <<block>> as FollowingVehicle
+  rectangle "clientSocket_ (UDP)" <<artifact>> as ClientSocket
+  rectangle "recvThreadEntry / recvThread_" <<block>> as FollowerRecvThread
+  rectangle "sendStatusThreadEntry" <<block>> as SendStatusThread
+  rectangle "transitionToLeader()" <<block>> as TransitionToLeader
+}
+
+package "Shared / Messages" {
+  rectangle "message.h (Status/Couple/Platoon)" <<block>> as MessageDefs
+  rectangle "VehicleInfo / PlatoonState" <<data>> as PlatoonStateData
+}
+
+' Internal helper blocks
+rectangle "runThreadEntry (control logic)" <<block>> as ControlLogic
+rectangle "eventQueue_ / eventCv_ (Event Queue)" <<block>> as EventQueue
+rectangle "eventSenderThreadEntry / eventThread_" <<block>> as EventHandler
+rectangle "Console Logger" <<block>> as ConsoleLogger
+rectangle "In-memory PlatoonState" <<block>> as InMemoryState
+
+' Connections (networking / dataflow)
+LeadingVehicle --> ServerSocket : binds to SERVER_PORT (UDP)
+ServerSocket --> LeaderRecvThread : recvfrom()
+LeaderRecvThread --> InMemoryState : update `platoonState_`
+SendPlatoonState --> ServerSocket : sendto() -> follower addresses
+
+FollowingVehicle --> ClientSocket : bind unique port (SERVER_PORT + id)
+ClientSocket --> FollowerRecvThread : recvfrom()
+SendStatusThread --> ClientSocket : sendto() -> leader (SERVER_PORT)
+FollowerRecvThread --> ControlLogic : STATUS_UPDATE / PLATOON_STATE / LEAVE_PLATOON
+
+MessageDefs --> LeaderRecvThread : message parsing
+MessageDefs --> FollowerRecvThread : message parsing
+
+EventQueue --> EventHandler : pop/push events
+EventHandler --> ServerSocket : leader sends events to rear follower
+EventHandler --> ClientSocket : follower forwards events to neighbors
+
+ControlLogic --> InMemoryState : read/write `VehicleInfo`
+ControlLogic --> ConsoleLogger : print state
+ConsoleLogger --> InMemoryState : (optional persistence via logs)
+
+HMI_FIFO --> EventQueue : write user events (mkfifo / /tmp/leader_event_fifo)
+Environment --> LeadingVehicle : external events (traffic light)
+
+note top of LeadingVehicle
+  LeadingVehicle implements UDP server logic using `serverSocket_`,
+  threads: `recvThread_`, `sendStatusThread_`, `eventSenderThread_`.
+end note
+
+note top of FollowingVehicle
+  FollowingVehicle uses `clientSocket_`, threads: `recvThread_`, `runThread_`,
+  `sendStatusThread_`, `eventSenderThread_`. Transition to leader occurs via `transitionToLeader()`.
+end note
+
+@enduml

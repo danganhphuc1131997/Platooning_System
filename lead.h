@@ -27,7 +27,8 @@ enum LeaderState : std::uint8_t {
     ERROR,      // Error state
     STOPPING,   // Braking to stop
     STOPPED,    // Stopped
-    STARTING    // Starting from stop
+    STARTING,    // Starting from stop
+    STOPPING_FOR_RED_LIGHT // Stopping for red traffic light
 };
 
 class LeadingVehicle {

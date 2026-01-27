@@ -1,0 +1,91 @@
+@startuml
+' SysML BDD package (use standard PlantUML `package` for compatibility)
+package "Physical Control Blocks [ System Context ]" as BDD {
+
+title Platooning System - SysML Context (analysis view)
+
+' External actors / systems
+rectangle "Human Driver\n(HMI FIFO / /tmp/*_event_fifo)" <<block>> as Driver
+rectangle "Road / Environment" <<block>> as Environment
+rectangle "Other Vehicles" <<block>> as OtherVehicles
+
+' Central system block (system of interest)
+rectangle "TruckPlatooning System" <<block>> as PlatooningSystem #AntiqueWhite
+
+' External services / infra
+rectangle "Network (UDP sockets)" <<block>> as Network
+rectangle "Console Logger" <<block>> as Logger
+
+' Internal physical blocks (mapped to code)
+rectangle "LeadingVehicle" <<block>> as LeadingVehicle
+rectangle "serverSocket_ (UDP)" <<block>> as ServerSocket
+rectangle "recvThread_ (recvThreadEntry)" <<block>> as LeaderRecv
+rectangle "heartbeatThread_" <<block>> as Heartbeat
+
+rectangle "FollowingVehicle" <<block>> as FollowingVehicle
+rectangle "clientSocket_ (UDP)" <<block>> as ClientSocket
+rectangle "recvThread_ (recvThreadEntry)" <<block>> as FollowerRecv
+rectangle "runThread_ (runThreadEntry)" <<block>> as FollowerControl
+
+rectangle "message.h / MessageDefs" <<block>> as Messages
+rectangle "PlatoonState (in-memory)" <<block>> as PlatoonState
+rectangle "eventQueue_ / eventCv_" <<block>> as EventQueue
+
+' Layout: place externals above, internals inside, helpers below
+Driver -down-> PlatooningSystem : user events
+Environment -down-> PlatooningSystem : traffic / obstacles
+OtherVehicles -down-> PlatooningSystem : V2V messages
+
+Network -right-> PlatooningSystem : UDP comms (sendto/recvfrom)
+Logger -right-> PlatooningSystem : console logs
+
+PlatooningSystem -down-> LeadingVehicle
+PlatooningSystem -down-> FollowingVehicle
+PlatooningSystem -down-> Messages
+PlatooningSystem -down-> PlatoonState
+PlatooningSystem -down-> EventQueue
+
+' Map components to code artifacts and connections
+LeadingVehicle --> ServerSocket : binds to SERVER_PORT (UDP)
+ServerSocket --> LeaderRecv : recvfrom() messages
+LeaderRecv --> PlatoonState : update `platoonState_`
+LeaderRecv --> Messages : parse STATUS/COUPLE/PLATOON
+
+FollowingVehicle --> ClientSocket : bind (SERVER_PORT + id)
+ClientSocket --> FollowerRecv : recvfrom() messages
+FollowerRecv --> FollowerControl : deliver STATUS/PLATOON/LEAVE
+FollowerControl --> PlatoonState : update local snapshot
+
+EventQueue --> LeadingVehicle : leader eventSenderThreadEntry
+EventQueue --> FollowingVehicle : follower eventSenderThreadEntry
+
+LeadingVehicle --> PlatoonState : maintain & broadcast (sendPlatoonState)
+LeadingVehicle --> Network : sendto() -> follower addresses
+FollowingVehicle --> Network : sendto() -> leader / neighbors
+
+Messages --> LeadingVehicle : message structs (see message.h)
+Messages --> FollowingVehicle : message structs
+
+' Safety and heartbeat
+Heartbeat --> PlatoonState : monitor follower heartbeats
+Heartbeat --> LeadingVehicle : remove timed-out followers
+
+' SysML-style notes
+note left of PlatooningSystem
+  System of Interest: coordinates `Leader` and `Follower` nodes, using
+  UDP message exchange and in-memory `PlatoonState` to maintain formation.
+end note
+
+note right of FollowingVehicle
+  Follower threads: `recvThread_`, `runThread_`, `sendStatusThread_`, `eventSenderThread_`.
+  Transition to leader via `transitionToLeader()` when LEAVE_PLATOON received.
+end note
+
+note right of LeadingVehicle
+  Leader threads: `recvThread_`, `sendStatusThread_`, `eventSenderThread_`, `heartbeatThread_`.
+  Maintains `platoonState_` and broadcasts `PlatoonStateMessage`.
+end note
+
+}
+
+@enduml
