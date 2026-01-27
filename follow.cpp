@@ -23,7 +23,6 @@ FollowingVehicle::FollowingVehicle(int id,
     info_.position = initialPosition;
     info_.speed = std::round(initialSpeed);
     info_.mode = FollowerMode;
-    info_.energy = 100.0;  // Start with full energy
 
     // Initialize front/rear vehicle info as invalid (id = -1 means unknown)
     frontVehicleInfo_.id = -1;
@@ -505,23 +504,6 @@ void* FollowingVehicle::sendStatusThreadEntry(void* arg) {
             std::cerr << "Failed to send status to leader: " << strerror(errno) << std::endl;
         }
 
-        // Send energy alert if needed
-        if (!follower->energyAlertSent_ && follower->getState() == LOW_ENERGY && follower->info_.speed <= follower->targetSpeed_ + 0.1) {
-            EnergyDepletionMessage energyMsg{};
-            energyMsg.type = MessageType::ENERGY_DEPLETION_ALERT;
-            energyMsg.vehicleId = follower->info_.id;
-            energyMsg.timestamp = nowMs();
-
-            ssize_t energySent = sendto(follower->clientSocket_, &energyMsg, sizeof(energyMsg), 0,
-                                        (const struct sockaddr*)&follower->leaderAddr_, sizeof(follower->leaderAddr_));
-            if (energySent < 0) {
-                std::cerr << "Failed to send energy depletion alert: " << strerror(errno) << std::endl;
-            } else {
-                std::cout << "Sent energy low alert (id=" << energyMsg.vehicleId << ", energy=" << follower->info_.energy << ")\n";
-                follower->energyAlertSent_ = true;
-            }
-        }
-
         // Also send to rear vehicle if known
         pthread_mutex_lock(&follower->leaderMutex_);
         VehicleInfo rear = follower->rearVehicleInfo_;
@@ -650,28 +632,27 @@ void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
             continue;
         }
 
-        // Build traffic light message (similar to leader)
-        TrafficLightMessage tlMsg{};
-        tlMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
-        tlMsg.timestamp = nowMs();
+        // Build event message
+        EventMessage eventMsg{};
+        eventMsg.timestamp = nowMs();
 
         switch (eventCode) {
             case 1: // Red light
-                tlMsg.status = LIGHT_RED;
+                eventMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
+                eventMsg.eventData = (void*)LIGHT_RED;
                 follower->setState(STOPPING_FOR_RED_LIGHT);
                 break;
             case 2: // Green light
-                tlMsg.status = LIGHT_GREEN;
+                eventMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
+                eventMsg.eventData = (void*)LIGHT_GREEN;
                 follower->setState(STARTING);
                 break;
             case 3: // Run out of energy
-                // Set energy to 0, reduce speed to 60%, send alert after reaching target
-                follower->info_.energy = 0.0;
+                eventMsg.type = MessageType::ENERGY_DEPLETION_ALERT;
+                // Set energy to 0, reduce speed to 60%, send alert immediately
                 follower->targetSpeed_ = follower->info_.speed * 0.6;
                 follower->setState(LOW_ENERGY);
-                follower->energyAlertSent_ = false; // Allow sending alert in status thread
-                // Skip sending tlMsg for energy event
-                continue;
+                break;
             default:
                 continue; // Skip unknown events
         }
@@ -682,14 +663,41 @@ void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
         VehicleInfo rear = follower->rearVehicleInfo_;
         pthread_mutex_unlock(&follower->leaderMutex_);
 
+        // Send event message to front and rear vehicles
         // Send to front vehicle
         if (front.id != -1 && front.ipAddress != 0 && front.port != 0) {
             struct sockaddr_in frontAddr{};
             frontAddr.sin_family = AF_INET;
             frontAddr.sin_addr.s_addr = front.ipAddress;
             frontAddr.sin_port = front.port;
-            sendto(follower->clientSocket_, &tlMsg, sizeof(tlMsg), 0,
-                   (const struct sockaddr*)&frontAddr, sizeof(frontAddr));
+
+            ssize_t sentBytes = 0;
+            switch (eventMsg.type) {
+                case TRAFFIC_LIGHT_ALERT: {
+                    TrafficLightMessage tlMsg{};
+                    tlMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
+                    tlMsg.timestamp = eventMsg.timestamp;
+                    tlMsg.status = (TrafficLightStatus)(uintptr_t)eventMsg.eventData;
+                    sentBytes = sendto(follower->clientSocket_, &tlMsg, sizeof(tlMsg), 0,
+                                       (const struct sockaddr*)&frontAddr, sizeof(frontAddr));
+                    break;
+                }
+                case ENERGY_DEPLETION_ALERT: {
+                    EnergyDepletionMessage energyMsg{};
+                    energyMsg.type = MessageType::ENERGY_DEPLETION_ALERT;
+                    energyMsg.vehicleId = follower->info_.id;
+                    energyMsg.timestamp = eventMsg.timestamp;
+                    sentBytes = sendto(follower->clientSocket_, &energyMsg, sizeof(energyMsg), 0,
+                                       (const struct sockaddr*)&frontAddr, sizeof(frontAddr));
+                    break;
+                }
+                default:
+                    break;
+            }
+
+            if (sentBytes < 0) {
+                std::cerr << "Failed to send event to front vehicle " << front.id << ": " << strerror(errno) << std::endl;
+            }
         }
 
         // Send to rear vehicle
@@ -698,11 +706,53 @@ void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
             rearAddr.sin_family = AF_INET;
             rearAddr.sin_addr.s_addr = rear.ipAddress;
             rearAddr.sin_port = rear.port;
-            sendto(follower->clientSocket_, &tlMsg, sizeof(tlMsg), 0,
-                   (const struct sockaddr*)&rearAddr, sizeof(rearAddr));
+
+            ssize_t sentBytes = 0;
+            switch (eventMsg.type) {
+                case TRAFFIC_LIGHT_ALERT: {
+                    TrafficLightMessage tlMsg{};
+                    tlMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
+                    tlMsg.timestamp = eventMsg.timestamp;
+                    tlMsg.status = (TrafficLightStatus)(uintptr_t)eventMsg.eventData;
+                    sentBytes = sendto(follower->clientSocket_, &tlMsg, sizeof(tlMsg), 0,
+                                       (const struct sockaddr*)&rearAddr, sizeof(rearAddr));
+                    break;
+                }
+                case ENERGY_DEPLETION_ALERT: {
+                    EnergyDepletionMessage energyMsg{};
+                    energyMsg.type = MessageType::ENERGY_DEPLETION_ALERT;
+                    energyMsg.vehicleId = follower->info_.id;
+                    energyMsg.timestamp = eventMsg.timestamp;
+                    sentBytes = sendto(follower->clientSocket_, &energyMsg, sizeof(energyMsg), 0,
+                                       (const struct sockaddr*)&rearAddr, sizeof(rearAddr));
+                    break;
+                }
+                default:
+                    break;
+            }
+
+            if (sentBytes < 0) {
+                std::cerr << "Failed to send event to rear vehicle " << rear.id << ": " << strerror(errno) << std::endl;
+            }
         }
 
-        std::cout << "[FOLLOWER " << follower->info_.id << "] Sent traffic light event to neighbors" << std::endl;
+        // For energy depletion, also send directly to leader
+        if (eventMsg.type == ENERGY_DEPLETION_ALERT) {
+            EnergyDepletionMessage energyMsg{};
+            energyMsg.type = MessageType::ENERGY_DEPLETION_ALERT;
+            energyMsg.vehicleId = follower->info_.id;
+            energyMsg.timestamp = eventMsg.timestamp;
+            ssize_t sentBytes = sendto(follower->clientSocket_, &energyMsg, sizeof(energyMsg), 0,
+                                       (const struct sockaddr*)&follower->leaderAddr_, sizeof(follower->leaderAddr_));
+            if (sentBytes < 0) {
+                std::cerr << "Failed to send energy depletion alert to leader: " << strerror(errno) << std::endl;
+            } else {
+                std::cout << "Sent energy low alert (id=" << energyMsg.vehicleId << ")\n";
+                follower->energyAlertSent_ = true; // Prevent sending again in status thread
+            }
+        }
+
+        std::cout << "[FOLLOWER " << follower->info_.id << "] Sent event to neighbors" << std::endl;
     }
     return nullptr;
 }
