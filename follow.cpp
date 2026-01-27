@@ -96,7 +96,7 @@ void FollowingVehicle::connectToLeader() {
 }
 
 // Send couple command to leader
-void FollowingVehicle::sendCoupleCommandToLeader() {
+void FollowingVehicle::sendCoupleCommandToLeader(bool couple) {
     CoupleCommandMessage cmd{};
     cmd.type = MessageType::COUPLE_COMMAND;
     cmd.info.id = info_.id;
@@ -105,7 +105,7 @@ void FollowingVehicle::sendCoupleCommandToLeader() {
     cmd.info.mode = info_.mode;
     cmd.info.ipAddress = info_.ipAddress; // include our address so leader knows where to send
     cmd.info.port = info_.port;
-    cmd.couple = true;
+    cmd.couple = couple;
     cmd.timestamp = nowMs();
 
     ssize_t sentBytes = sendto(clientSocket_, &cmd, sizeof(cmd), 0,
@@ -185,16 +185,36 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     std::cout << "Received traffic light alert: "
                               << (alert == LIGHT_RED ? "RED" : "GREEN") << std::endl;
                     
-                    // Process the alert
-                    switch (alert) {
-                        case LIGHT_RED:
-                            follower->setState(STOPPING_FOR_RED_LIGHT);
-                            break;
-                        case LIGHT_GREEN:
+                                        // Store latest light state
+                    pthread_mutex_lock(&follower->leaderMutex_);
+                    follower->trafficLight_ = alert;
+                    pthread_mutex_unlock(&follower->leaderMutex_);
+
+                    // Process the alert (delay + decoupled logic)
+                    if (alert == LIGHT_RED) {
+                        follower->setState(STOPPING_FOR_RED_LIGHT);
+                    } else if (alert == LIGHT_GREEN) {
+                        bool isDecoupled = false;
+                        bool hasDelay = false;
+                        int delaySec = 0;
+                        pthread_mutex_lock(&follower->leaderMutex_);
+                        isDecoupled = follower->decoupled_;
+                        hasDelay = follower->delayAfterNextGreenArmed_;
+                        delaySec = follower->delayAfterNextGreenSec_;
+                        if (hasDelay) {
+                            follower->delayedUntilMs_ = nowMs() + static_cast<std::int64_t>(delaySec) * 1000;
+                            follower->delayAfterNextGreenArmed_ = false; // consume
+                        }
+                        pthread_mutex_unlock(&follower->leaderMutex_);
+
+                        if (isDecoupled) {
+                            follower->setState(DECOUPLED);
+                        } else if (hasDelay && delaySec > 0) {
+                            // Stay stopped until delayedUntilMs_ expires (handled in run loop)
+                            follower->setState(STOPPED);
+                        } else {
                             follower->setState(STARTING);
-                            break;
-                        default:
-                            break;
+                        }
                     }
 
                     // Forward to rear vehicle
@@ -288,11 +308,21 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
         frontSp = follower->frontVehicleInfo_.speed;
         pthread_mutex_unlock(&follower->leaderMutex_);
 
+        // Snapshot traffic light + decouple/delay state (protected by leaderMutex_)
+        TrafficLightStatus light = LIGHT_GREEN;
+        std::int64_t delayedUntil = 0;
+        bool isDecoupled = false;
+        pthread_mutex_lock(&follower->leaderMutex_);
+        light = follower->trafficLight_;
+        delayedUntil = follower->delayedUntilMs_;
+        isDecoupled = follower->decoupled_;
+        pthread_mutex_unlock(&follower->leaderMutex_);
+
         // Determine which vehicle to follow:
         // - If front vehicle is unknown (id == -1) or IS the leader, follow leader
         // - Otherwise follow the front vehicle
         double refPos, refSp;
-        if (frontId == -1 || frontMode == LeaderMode) {
+        if (isDecoupled || frontId == -1 || frontMode == LeaderMode) {
             refPos = leaderPos;
             refSp = leaderSp;
         } else {
@@ -301,6 +331,34 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
         }
 
         double gap = refPos - follower->info_.position;
+
+                // If we are delaying start after GREEN, hold still until the timer expires
+        const std::int64_t now = nowMs();
+        if (!isDecoupled && light == LIGHT_GREEN && delayedUntil > now) {
+            follower->info_.speed = 0.0;
+            follower->setState(STOPPED);
+        } else if (!isDecoupled && light == LIGHT_GREEN && delayedUntil != 0 && delayedUntil <= now && follower->getState() == STOPPED) {
+            pthread_mutex_lock(&follower->leaderMutex_);
+            follower->delayedUntilMs_ = 0;
+            pthread_mutex_unlock(&follower->leaderMutex_);
+            follower->setState(STARTING);
+        }
+
+        // Detect "left-behind" on GREEN when leader is moving and this follower is still stopped
+        if (!isDecoupled && light == LIGHT_GREEN) {
+            const bool leaderMoving = (leaderSp > 0.5);
+            const bool thisStopped = (follower->info_.speed < LEFT_BEHIND_STOPPED_EPS);
+            if (leaderMoving && thisStopped && gap > LEFT_BEHIND_GAP_THRESHOLD) {
+                pthread_mutex_lock(&follower->leaderMutex_);
+                follower->decoupled_ = true;
+                follower->delayedUntilMs_ = 0;
+                pthread_mutex_unlock(&follower->leaderMutex_);
+
+                follower->sendCoupleCommandToLeader(false); // temporarily leave platoon
+                follower->setState(DECOUPLED);
+                isDecoupled = true;
+            }
+        }
 
         // Simple state machine for follower behavior
         FollowerState currentState = follower->getState();
@@ -357,6 +415,29 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
                 break;
             case STOPPED:
                 follower->info_.speed = 0.0;
+                break;
+            case DECOUPLED:
+                // On RED, remain stopped. On GREEN, catch up to the leader until the target gap is reached.
+                if (light == LIGHT_RED) {
+                    follower->info_.speed = 0.0;
+                    break;
+                }
+
+                // Rejoin when close to desired following distance
+                if (gap >= (SAFE_DISTANCE - REJOIN_TOLERANCE) && gap <= (SAFE_DISTANCE + REJOIN_TOLERANCE)) {
+                    pthread_mutex_lock(&follower->leaderMutex_);
+                    follower->decoupled_ = false;
+                    pthread_mutex_unlock(&follower->leaderMutex_);
+
+                    follower->sendCoupleCommandToLeader(true);
+                    follower->setState(NORMAL);
+                    follower->info_.speed = refSp;
+                    break;
+                }
+
+                // Otherwise, accelerate above leader speed (bounded)
+                follower->info_.speed = std::round(std::min(leaderSp + CATCH_UP_SPEED_BONUS,
+                                                           follower->info_.speed + accel * dt));
                 break;
             default:
                 break;
@@ -436,6 +517,7 @@ void* FollowingVehicle::displayThreadEntry(void* arg) {
             case STARTING: stateStr = "STARTING"; break;
             case CATCHING_UP: stateStr = "CATCHING_UP"; break;
             case STOPPING_FOR_RED_LIGHT: stateStr = "STOPPING_FOR_RED_LIGHT"; break;
+            case DECOUPLED: stateStr = "DECOUPLED"; break;
             default: stateStr = "UNKNOWN"; break;
         }
         std::cout << "\033[2J\033[H"; // clear screen + home
@@ -500,6 +582,18 @@ void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
         int eventCode = follower->eventQueue_.front();
         follower->eventQueue_.pop();
         pthread_mutex_unlock(&follower->eventMutex_);
+
+        // Special input: arm a start-delay after the next GREEN
+        // We encode delay as 1000 + seconds via FIFO (still only one int)
+        if (eventCode >= 1000) {
+            int sec = eventCode - 1000;
+            pthread_mutex_lock(&follower->leaderMutex_);
+            follower->delayAfterNextGreenArmed_ = true;
+            follower->delayAfterNextGreenSec_ = sec;
+            pthread_mutex_unlock(&follower->leaderMutex_);
+            std::cout << "[FOLLOWER " << follower->info_.id << "] Armed start-delay after next GREEN: " << sec << "s" << std::endl;
+            continue;
+        }
 
         // Build traffic light message (similar to leader)
         TrafficLightMessage tlMsg{};
@@ -568,9 +662,19 @@ int main(int argc, char* argv[]) {
             std::cout << "\n[FOLLOWER " << followerId << " EVENT INPUT]\n";
             std::cout << "1: Traffic light RED\n";
             std::cout << "2: Traffic light GREEN\n";
+            std::cout << "3: Set delay after next GREEN (seconds)\n";
             std::cout << "0: Exit\n";
             std::cout << "Enter choice: ";
             std::cin >> choice;
+
+            if (choice == 3) {
+                int sec = 0;
+                std::cout << "Delay seconds: ";
+                std::cin >> sec;
+                int code = 1000 + sec;
+                write(fd, &code, sizeof(int));
+                continue;
+            }
 
             write(fd, &choice, sizeof(int));
             if (choice == 0) break;
