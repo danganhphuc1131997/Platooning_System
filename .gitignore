@@ -1,0 +1,67 @@
+# Build directories
+/build/
+/bin/
+/out/
+cmake-build-*/
+build-*/
+/dsrc
+
+# CMake files and build artefacts
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile.user
+
+# Executable binaries for follow and lead
+follow
+lead
+follower_input
+leader_input
+
+# Object and binary files
+*.o
+*.obj
+*.so
+*.a
+*.lib
+*.dll
+*.exe
+*.out
+a.out
+*.elf
+
+# Debug, logs, coverage
+*.log
+*.tmp
+*.temp
+core
+*.stackdump
+*.gcda
+*.gcno
+coverage/
+lcov-report/
+
+# IDE/editor
+.vscode/
+.idea/
+*.iml
+*.sublime-*
+*.code-workspace
+
+# Editor backup files
+*~
+*.swp
+*.swo
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Tags, ccache, build tools
+tags
+ccache/
+conanfile.lock
+
+# Python caches (if any tools/scripts exist)
+__pycache__/
+*.pyc
