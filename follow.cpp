@@ -293,6 +293,37 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     pthread_mutex_unlock(&follower->leaderMutex_);
                     break;
                 }                
+                case OBSTACLE_DETECTED_ALERT: {
+                    if (static_cast<size_t>(recvLen) < sizeof(ObstacleMessage)) break;
+                    ObstacleMessage obsMsg;
+                    std::memcpy(&obsMsg, buffer, sizeof(obsMsg));
+                    bool detected = obsMsg.obstacleDetected;
+                    std::cout << "Received obstacle detected alert: "
+                              << (detected ? "DETECTED" : "CLEARED") << std::endl;
+
+                    if (detected) {
+                        follower->setState(STOPPING_FOR_OBSTACLE);
+                    } else {
+                        if (follower->getState() == STOPPED || follower->getState() == STOPPING_FOR_OBSTACLE) {
+                            follower->setState(NORMAL);
+                        }
+                    }
+                    // Process obstacle detection (for now just log)
+                    // Forward to rear vehicle
+                    pthread_mutex_lock(&follower->leaderMutex_);
+                    VehicleInfo rear = follower->rearVehicleInfo_;
+                    pthread_mutex_unlock(&follower->leaderMutex_);
+
+                    if (rear.id != -1 && rear.ipAddress != 0 && rear.port != 0) {
+                        struct sockaddr_in rearAddr{};
+                        rearAddr.sin_family = AF_INET;
+                        rearAddr.sin_addr.s_addr = rear.ipAddress;
+                        rearAddr.sin_port = rear.port;
+                        sendto(follower->clientSocket_, &obsMsg, sizeof(obsMsg), 0,
+                               (const struct sockaddr*)&rearAddr, sizeof(rearAddr));
+                    }
+                    break;
+                }
                 default:
                     // ignore other message types for now
                     break;
@@ -424,13 +455,14 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
                     follower->info_.speed = std::round(std::max(0.0, follower->info_.speed - decel * dt));
                     if (follower->info_.speed <= 0.001) {
                         follower->info_.speed = 0.0;
-                        follower->setState(STOPPED);
+                        // follower->setState(STOPPED);
                     }
                 }
                 break;
             case STOPPING_FOR_RED_LIGHT:
+            case STOPPING_FOR_OBSTACLE:
                 if (follower->info_.speed > 0.0) {
-                    follower->info_.speed = std::round(std::max(0.0, follower->info_.speed - decel * dt));
+                    follower->info_.speed = std::round(std::max(0.0, follower->info_.speed - decel * dt * 1.32));
                     if (follower->info_.speed <= 0.001) {
                         follower->info_.speed = 0.0;
                         follower->setState(STOPPED);
@@ -553,6 +585,7 @@ void* FollowingVehicle::displayThreadEntry(void* arg) {
             case STARTING: stateStr = "STARTING"; break;
             case CATCHING_UP: stateStr = "CATCHING_UP"; break;
             case STOPPING_FOR_RED_LIGHT: stateStr = "STOPPING_FOR_RED_LIGHT"; break;
+            case STOPPING_FOR_OBSTACLE: stateStr = "STOPPING_FOR_OBSTACLE"; break;
             case DECOUPLED: stateStr = "DECOUPLED"; break;
             case LOW_ENERGY: stateStr = "LOW_ENERGY"; break;
             default: stateStr = "UNKNOWN"; break;

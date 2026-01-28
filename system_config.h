@@ -1,6 +1,9 @@
 #ifndef SYSTEM_CONFIG_H
 #define SYSTEM_CONFIG_H
 
+// Maximum vehicles in a platoon for fixed-size wire message
+constexpr int MAX_PLATOON_VEHICLES = 16;
+
 // System configuration parameters
 const int MAX_VEHICLES = 10;          // Maximum number of vehicles in the platoon
 const double SAFE_DISTANCE = 20.0;    // Safe following distance in meters
@@ -19,6 +22,10 @@ const double LEADER_INITIAL_SPEED = 60.0;   // in m/s
 const int FOLLOWER_INITIAL_ID = 2;
 const double FOLLOWER_INITIAL_SPEED = 60.0; // in m/s
 const double FOLLOWER_INITIAL_POSITION = -20.0; // in meters
+
+// OPENCL Parameters for Lidar
+const int LIDAR_RAYS = 720;    // 720 rays per scan
+const int SAFETY_DIST = 20;    // Safe distance (meters) for obstacle avoidance
 
 // Traffic light statuses
 enum TrafficLightStatus {

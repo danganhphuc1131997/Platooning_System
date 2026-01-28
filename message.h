@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <vector>
 #include "vehicle.h"
+#include "system_config.h"
 
 // Message types
 enum MessageType : std::uint8_t {
@@ -19,7 +20,14 @@ enum MessageType : std::uint8_t {
     TRAFFIC_LIGHT_ALERT = 3,   // Traffic alert message
     ENERGY_DEPLETION_ALERT = 4,  // Energy depletion alert
     ENERGY_RESTORED = 5,  // Energy restored message
-    GAS_STATION_ALERT = 6  // Gas station alert
+    GAS_STATION_ALERT = 6,  // Gas station alert
+    OBSTACLE_DETECTED_ALERT = 7 // Obstacle detected alert
+};
+
+struct ObstacleMessage {
+    MessageType type;       // Message type
+    bool obstacleDetected;  // true if obstacle detected
+    std::int64_t timestamp; // Timestamp of the event
 };
 
 struct EventMessage {
@@ -69,9 +77,6 @@ struct CoupleCommandMessage {
     bool couple;            // true to couple, false to decouple
     std::int64_t timestamp; // Timestamp of the message
 };
-
-// Maximum vehicles in a platoon for fixed-size wire message
-constexpr int MAX_PLATOON_VEHICLES = 16;
 
 // Structure for platoon state broadcast (leader -> followers)
 struct PlatoonStateMessage {

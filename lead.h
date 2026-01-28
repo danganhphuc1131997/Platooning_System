@@ -21,6 +21,9 @@
 #include <netinet/in.h>
 #include <queue>
 #include "message.h"
+#include <CL/cl.h>
+#include <vector>
+#include <algorithm>
 
 enum LeaderState : std::uint8_t {
     NORMAL = 0, // Normal driving
@@ -42,6 +45,8 @@ public:
     void setState(LeaderState newState);
     LeaderState getState() const;
 
+    // For OpenCL testing purposes
+    bool force_obstacle_{false};
 private:
     VehicleInfo info_;
     LeaderState state_;
@@ -83,6 +88,25 @@ private:
     static void* sendStatusThreadEntry(void* arg);      // Status sending thread
     pthread_t eventSenderThread_{};
     static void* eventSenderThreadEntry(void* arg);     // Event sending thread
+
+    // For OpenCL Lidar processing
+    cl_platform_id platform_id;
+    cl_device_id device_id;
+    cl_context context;
+    cl_command_queue command_queue;
+    cl_program program;
+    cl_kernel lidar_kernel;
+
+    cl_mem input_distance_buffer; // Input buffer for distances
+    cl_mem output_risk_buffer;    // Output buffer for risk levels
+
+    std::vector<float> lidar_data_; // Lidar distance data
+    std::vector<int> risk_map_;     // Risk map data
+
+    void initOpenCL_AEB();          // Initialize OpenCL for AEB
+    void cleanOpenCL();             // Clean up OpenCL resources
+    bool scanEnvironmentWithGPU();  // Returns True if danger detected
+    void updateSimulatedLidar();    // Simulate changing sensor data
 
     // Helpers
     void createServerSocket();
