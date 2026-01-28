@@ -28,7 +28,8 @@ enum FollowerState : std::uint8_t {
     CATCHING_UP,            // Speeding up to catch leader
     STOPPING_FOR_RED_LIGHT, // Stopping for red light
     DECOUPLED,              // Temporarily decoupled from platoon (left behind)
-    LOW_ENERGY              // Low energy, reduced speed
+    LOW_ENERGY,              // Low energy, reduced speed
+    STOPPING_FOR_OBSTACLE   // Stopping for obstacle detected ahead
 };
 class FollowingVehicle {
 public:

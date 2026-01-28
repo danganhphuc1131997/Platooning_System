@@ -16,6 +16,27 @@
 
 #define EVENT_FIFO "/tmp/leader_event_fifo"
 
+// For OpenCL Lidar processing
+// Safety check kernel:
+// Input: Array of distances
+// Output: Array of risk flags: 1 means danger, 0 means safe
+const char *lidarKernelSource = R"(
+__kernel void check_lidar_safety(__global const float *distances, 
+                                 __global int *risks, 
+                                 float safety_threshold) {
+    // Get current index of the ray
+    int i = get_global_id(0);
+    
+    // Actual Lidar rays count
+    // If distance < safety threshold AND > 0 (to exclude noise = 0), mark as danger
+    if (distances[i] < safety_threshold && distances[i] > 0.1f) {
+        risks[i] = 1; // DANGER!
+    } else {
+        risks[i] = 0; // SAFE!
+    }
+}
+)";
+
 // Constructor
 LeadingVehicle::LeadingVehicle(int id, double initialPosition, double initialSpeed)
     : state_(NORMAL), serverRunning_(false), originalSpeed_(initialSpeed), energyAlertSent_(false), stopTimeMs_(0), gasStationStop_(false) {
@@ -35,6 +56,7 @@ LeadingVehicle::LeadingVehicle(int id, double initialPosition, double initialSpe
     platoonState_.vehicles.push_back(info_);
     platoonState_.followerCount = 0;
     pthread_mutex_init(&mutex_, nullptr);
+    initOpenCL_AEB();
 }
 
 // Destructor
@@ -43,6 +65,7 @@ LeadingVehicle::~LeadingVehicle() {
     pthread_mutex_destroy(&mutex_);
     pthread_mutex_destroy(&eventMutex_);
     pthread_cond_destroy(&eventCv_);
+    cleanOpenCL();
 }
 
 // Start UDP server to communicate with followers
@@ -357,8 +380,28 @@ void* LeadingVehicle::eventSimulationThreadEntry(void* arg) {
             // Handle event
             switch (eventChoice) {
                 case 1: {
+                    // Obstacle detected toggle
+                    leader->force_obstacle_ = !leader->force_obstacle_;
+                    std::cout << "[SYSTEM] Obstacle detection forced to " << (leader->force_obstacle_ ? "ON" : "OFF") << std::endl;
+                    ObstacleMessage obsMsg{};
+                    obsMsg.type = MessageType::OBSTACLE_DETECTED_ALERT;
+                    obsMsg.obstacleDetected = leader->force_obstacle_;
+                    obsMsg.timestamp = nowMs();
+
+                    if (!leader->force_obstacle_ && leader->getState() == STOPPED) {
+                        leader->setState(NORMAL); 
+                    }
+                    // send event to followers
+                    EventMessage eventMsg{};
+                    eventMsg.type = MessageType::OBSTACLE_DETECTED_ALERT;
+                    eventMsg.eventData = &obsMsg.obstacleDetected;
+                    eventMsg.timestamp = nowMs();
+                    pthread_mutex_lock(&leader->eventMutex_);
+                    leader->eventQueue_.push(eventMsg);
+                    pthread_cond_signal(&leader->eventCv_);
+                    pthread_mutex_unlock(&leader->eventMutex_);
                     break;
-                } // Obstacle
+                } // Obstacle 
 
                 case 2: {
                     // Red Light
@@ -472,6 +515,19 @@ void* LeadingVehicle::runThreadEntry(void* arg) {
     const double decel = 12;   // m/s^2 when stopping
 
     while (leader->serverRunning_) {
+        // For OpenCL Lidar processing******************************************************************************
+        // Update sensor data
+        leader->updateSimulatedLidar();
+        // Scan environment for obstacles
+        bool obstacleDetected = leader->scanEnvironmentWithGPU();
+        if (obstacleDetected) {
+            if (leader->getState() != STOPPED && leader->getState() != STOPPING) {
+                std::cout << "\033[1;31m[AEB ACTIVATED] Obstacle detected by OpenCL! Emergency Braking!\033[0m\n";
+                leader->setState(STOPPING);
+            }
+        }
+        // End OpenCL Lidar processing******************************************************************************
+
         // Update kinematics according to the leader state machine
         LeaderState st = leader->getState();
         double targetSpeed = (st == NORMAL) ? leader->originalSpeed_ : leader->info_.speed;
@@ -484,7 +540,7 @@ void* LeadingVehicle::runThreadEntry(void* arg) {
                 }
                 break;
             case STOPPING:
-                leader->info_.speed = std::max(0.0, leader->info_.speed - decel * dt);
+                leader->info_.speed = std::max(0.0, leader->info_.speed - decel * dt * 1.2); // slightly more aggressive decel
                 if (leader->info_.speed <= 0.001) {
                     leader->info_.speed = 0.0;
                     leader->setState(STOPPED);
@@ -635,7 +691,7 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
                         TrafficLightMessage tlMsg{};
                         tlMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
                         tlMsg.timestamp = eventMsg.timestamp;
-                        tlMsg.status = (leader->getState() == STOPPING) ? LIGHT_RED : LIGHT_GREEN;
+                        tlMsg.status = eventMsg.eventData ? *(static_cast<TrafficLightStatus*>(eventMsg.eventData)) : LIGHT_GREEN;
                         sentBytes = sendto(leader->serverSocket_, &tlMsg, sizeof(tlMsg), 0,
                                            (const struct sockaddr*)&dest, sizeof(dest));
                         break;
@@ -646,6 +702,15 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
                         gsMsg.vehicleId = leader->info_.id;
                         gsMsg.timestamp = eventMsg.timestamp;
                         sentBytes = sendto(leader->serverSocket_, &gsMsg, sizeof(gsMsg), 0,
+                                           (const struct sockaddr*)&dest, sizeof(dest));
+                        break;
+                    }
+                    case OBSTACLE_DETECTED_ALERT: {
+                        ObstacleMessage obsMsg{};
+                        obsMsg.type = MessageType::OBSTACLE_DETECTED_ALERT;
+                        obsMsg.timestamp = eventMsg.timestamp;
+                        obsMsg.obstacleDetected = eventMsg.eventData ? *(static_cast<bool*>(eventMsg.eventData)) : false;
+                        sentBytes = sendto(leader->serverSocket_, &obsMsg, sizeof(obsMsg), 0,
                                            (const struct sockaddr*)&dest, sizeof(dest));
                         break;
                     }
@@ -693,6 +758,99 @@ std::int64_t LeadingVehicle::nowMs() {
                std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+// OpenCL helper functions would go here (omitted for brevity)
+void LeadingVehicle::initOpenCL_AEB() {
+    cl_int ret;
+
+    // 1. Basic OpenCL setup
+    clGetPlatformIDs(1, &platform_id, NULL);
+    clGetDeviceIDs(platform_id, CL_DEVICE_TYPE_DEFAULT, 1, &device_id, NULL);
+    context = clCreateContext(NULL, 1, &device_id, NULL, NULL, &ret);
+    command_queue = clCreateCommandQueue(context, device_id, 0, &ret);
+
+    // 2. Memory allocation
+    lidar_data_.resize(LIDAR_RAYS, 100.0f); // Default clear road (100m)
+    risk_map_.resize(LIDAR_RAYS, 0);
+
+    input_distance_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY, 
+                                           LIDAR_RAYS * sizeof(float), NULL, &ret);
+    output_risk_buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, 
+                                        LIDAR_RAYS * sizeof(int), NULL, &ret);
+
+    // 3. Build Kernel
+    program = clCreateProgramWithSource(context, 1, (const char **)&lidarKernelSource, NULL, &ret);
+    ret = clBuildProgram(program, 1, &device_id, NULL, NULL, NULL);
+    
+    if (ret != CL_SUCCESS) {
+        // Debug build errors (important when kernel code is wrong)
+        size_t len;
+        char buffer[2048];
+        clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
+        std::cerr << "[OPENCL ERROR] Build Log: " << buffer << std::endl;
+        exit(1);
+    }
+
+    lidar_kernel = clCreateKernel(program, "check_lidar_safety", &ret);
+    std::cout << "[SYSTEM] AEB System (OpenCL) Initialized. Monitoring " << LIDAR_RAYS << " Lidar rays.\n";
+}
+
+void LeadingVehicle::cleanOpenCL() {
+    clReleaseMemObject(input_distance_buffer);
+    clReleaseMemObject(output_risk_buffer);
+    clReleaseKernel(lidar_kernel);
+    clReleaseProgram(program);
+    clReleaseCommandQueue(command_queue);
+    clReleaseContext(context);
+}
+
+void LeadingVehicle::updateSimulatedLidar() {
+    // Reset all to 100m (clear road)
+    std::fill(lidar_data_.begin(), lidar_data_.end(), 100.0f);
+
+    // [SIMULATION] Randomly simulate obstacle appearance
+    // 1% chance each call to have an obstacle appear in front (middle of array)
+    if (force_obstacle_) {  // Forced obstacle for testing
+        // Assume obstacle is 15m away (below safe distance 20m)
+        // Obstacle blocks rays from 350 to 370
+        for (int i = 350; i < 370; ++i) {
+            lidar_data_[i] = 15.0f; 
+        }
+        // std::cout << "[SIM] Obstacle detected by sensors!\n"; 
+    }
+}
+
+bool LeadingVehicle::scanEnvironmentWithGPU() {
+    cl_int ret;
+
+    // 1. Copy latest Lidar data from RAM to VRAM
+    ret = clEnqueueWriteBuffer(command_queue, input_distance_buffer, CL_TRUE, 0,
+                               LIDAR_RAYS * sizeof(float), lidar_data_.data(), 
+                               0, NULL, NULL);
+
+    // 2. Set Kernel arguments
+    float threshold = (float)SAFETY_DIST;
+    clSetKernelArg(lidar_kernel, 0, sizeof(cl_mem), (void *)&input_distance_buffer);
+    clSetKernelArg(lidar_kernel, 1, sizeof(cl_mem), (void *)&output_risk_buffer);
+    clSetKernelArg(lidar_kernel, 2, sizeof(float), (void *)&threshold);
+
+    // 3. Launch GPU with 720 parallel threads
+    size_t global_size = LIDAR_RAYS;
+    ret = clEnqueueNDRangeKernel(command_queue, lidar_kernel, 1, NULL, 
+                                 &global_size, NULL, 0, NULL, NULL);
+
+    // 4. Read analysis results back to RAM
+    ret = clEnqueueReadBuffer(command_queue, output_risk_buffer, CL_TRUE, 0,
+                              LIDAR_RAYS * sizeof(int), risk_map_.data(), 
+                              0, NULL, NULL);
+
+    // 5. CPU aggregate results (Simple reduction)
+    // If any ray reports danger (value 1), return true
+    for (int risk : risk_map_) {
+        if (risk == 1) return true; // Obstacle detected!
+    }
+    return false;
+}
+
 // Program start entry
 int main(int argc, char** argv) {
     // Terminal for event input
@@ -705,7 +863,7 @@ int main(int argc, char** argv) {
             // Display menu
             std::cout << "\033[2J\033[H"; // clear screen + home
             std::cout << "\n[LEADER EVENT INPUT]\n";
-            std::cout << "1: Obstacle detected\n";
+            std::cout << "1: Obstacle detected (ON/OFF)\n";
             std::cout << "2: Traffic light RED\n";
             std::cout << "3: Traffic light GREEN\n";
             std::cout << "4: Cut-in vehicle alert\n";

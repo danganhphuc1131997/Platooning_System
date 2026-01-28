@@ -3,6 +3,7 @@
 
 CXX = g++
 CXXFLAGS = -std=c++17 -pthread -Wall
+LDLIBS = -lOpenCL
 TARGET_DIR = .
 
 # Main programs
@@ -18,11 +19,11 @@ all: $(LEAD) $(FOLLOW) $(LEADER_INPUT) $(FOLLOWER_INPUT)
 
 # Build lead vehicle program
 $(LEAD): lead.cpp lead.h vehicle.h message.h system_config.h
-	$(CXX) $(CXXFLAGS) lead.cpp -o $(LEAD)
+	$(CXX) $(CXXFLAGS) lead.cpp -o $(LEAD) $(LDLIBS)
 
 # Build follow vehicle program
 $(FOLLOW): follow.cpp follow.h vehicle.h message.h system_config.h
-	$(CXX) $(CXXFLAGS) follow.cpp -o $(FOLLOW)
+	$(CXX) $(CXXFLAGS) follow.cpp -o $(FOLLOW) $(LDLIBS)
 
 # Build leader input program
 $(LEADER_INPUT): leader_input.cpp
