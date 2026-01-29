@@ -26,12 +26,13 @@
 #include <algorithm>
 
 enum LeaderState : std::uint8_t {
-    NORMAL = 0, // Normal driving
-    ERROR,      // Error state
-    STOPPING,   // Braking to stop
-    STOPPED,    // Stopped
-    STARTING,   // Starting from stop
-    LOW_ENERGY  // Low energy, reducing speed
+    NORMAL = 0,  // Normal driving
+    ERROR,       // Error state
+    STOPPING,    // Braking to stop
+    STOPPED,     // Stopped
+    STARTING,    // Starting from stop
+    LOW_ENERGY,  // Low energy, reducing speed
+    DEGRADED   // Communication degraded mode
 };
 
 class LeadingVehicle {

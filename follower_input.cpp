@@ -66,6 +66,8 @@ int main(int argc, char* argv[]) {
         std::cout << "========================================\n";
         std::cout << "1: Traffic light RED (follower stops)\n";
         std::cout << "2: Traffic light GREEN (follower resumes)\n";
+        std::cout << "3: Simulate comm loss (3s)\n";
+        std::cout << "4: Simulate comm loss (5s)\n";
         std::cout << "0: Exit\n";
         std::cout << "========================================\n";
         std::cout << "Enter choice: ";
@@ -77,8 +79,8 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        if (choice < 0 || choice > 2) {
-            std::cout << "Invalid choice. Please select 0-2.\n";
+        if (choice < 0 || choice > 4) {
+            std::cout << "Invalid choice. Please select 0-4.\n";
             continue;
         }
 
@@ -96,6 +98,18 @@ int main(int argc, char* argv[]) {
                 break;
             case 2:
                 std::cout << "✓ Sent: Traffic light GREEN\n";
+                break;
+            case 3:
+                std::cout << "✓ Sent: Run out of energy\n";
+                break;
+            case 4:
+                std::cout << "✓ Sent: Delay after next GREEN (seconds)\n\n";
+                break;
+            case 5:
+                std::cout << "✓ Sent: Simulate comm loss (3s)\n";
+                break;
+            case 6:
+                std::cout << "✓ Sent: Simulate comm loss (5s)\n";
                 break;
             case 0:
                 std::cout << "✓ Exiting...\n";

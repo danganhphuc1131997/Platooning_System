@@ -21,9 +21,15 @@ enum MessageType : std::uint8_t {
     ENERGY_DEPLETION_ALERT = 4,  // Energy depletion alert
     ENERGY_RESTORED = 5,  // Energy restored message
     GAS_STATION_ALERT = 6,  // Gas station alert
-    OBSTACLE_DETECTED_ALERT = 7 // Obstacle detected alert
+    OBSTACLE_DETECTED_ALERT = 7, // Obstacle detected alert
+    REMOVE_VEHICLE = 8 // Remove vehicle from platoon
 };
 
+struct RemoveVehicleMessage {
+    MessageType type;       // Message type
+    int vehicleId;          // ID of the vehicle to remove
+    std::int64_t timestamp; // Timestamp of the message
+};
 struct ObstacleMessage {
     MessageType type;       // Message type
     bool obstacleDetected;  // true if obstacle detected

@@ -59,6 +59,7 @@ private:
     // Leader snapshot (updated by recv thread when leader STATUS_UPDATE received)
     double leaderPosition_{}; // latest leader position (meters)
     double leaderSpeed_{};    // latest leader speed (m/s)
+    std::int64_t lastLeaderUpdateMs_{0}; // last time leader status was received
     pthread_mutex_t leaderMutex_{}; // protects leaderPosition_/leaderSpeed_
 
     // Client socket
@@ -73,6 +74,11 @@ private:
     // --- Traffic light + left-behind simulation ---
     TrafficLightStatus trafficLight_{LIGHT_GREEN};
     bool decoupled_{false};
+    bool communicationLost_{false};
+    bool stopSendingStatus_{false};
+    std::int64_t lastReconnectAttemptMs_{0};
+    std::int64_t resumeSendingMs_{0};
+    bool tryingRejoin_{false};
     bool delayAfterNextGreenArmed_{false};
     int delayAfterNextGreenSec_{0};
     std::int64_t delayedUntilMs_{0};

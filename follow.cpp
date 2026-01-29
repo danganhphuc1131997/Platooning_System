@@ -290,6 +290,12 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     } else {
                         follower->rearVehicleInfo_.id = -1; // no rear vehicle
                     }
+                    // If we find ourselves in the platoon list, we successfully rejoined
+                    if (myIndex != -1) {
+                        follower->tryingRejoin_ = false;
+                        // Also ensure we are not marked decoupled
+                        follower->decoupled_ = false;
+                    }
                     pthread_mutex_unlock(&follower->leaderMutex_);
                     break;
                 }                
@@ -321,6 +327,46 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                         rearAddr.sin_port = rear.port;
                         sendto(follower->clientSocket_, &obsMsg, sizeof(obsMsg), 0,
                                (const struct sockaddr*)&rearAddr, sizeof(rearAddr));
+                    }
+                        }
+                    break;
+                case REMOVE_VEHICLE: {
+                    if (static_cast<size_t>(recvLen) < sizeof(RemoveVehicleMessage)) break;
+                    // Pause 5 seconds before attempting to rejoin
+                    follower->setState(STOPPED);
+                    std::this_thread::sleep_for(std::chrono::seconds(5));
+                    follower->setState(NORMAL);
+                    RemoveVehicleMessage removeMsg;
+                    std::memcpy(&removeMsg, buffer, sizeof(removeMsg));
+                    if (removeMsg.vehicleId == follower->info_.id) {
+                        std::cout << "[FOLLOWER " << follower->info_.id << "] Received remove notification. Will request rejoin.\n";
+                        // Reset local platoon snapshot and mark for periodic rejoin attempts
+                        pthread_mutex_lock(&follower->leaderMutex_);
+                        follower->leaderPosition_ = 0.0;
+                        follower->leaderSpeed_ = 0.0;
+                        follower->lastLeaderUpdateMs_ = 0;
+                        follower->frontVehicleInfo_.id = -1;
+                        follower->rearVehicleInfo_.id = -1;
+                        follower->platoonState_.vehicles.clear();
+                        follower->trafficLight_ = LIGHT_GREEN;
+                        // Ensure we are not marked decoupled so run loop treats us as NORMAL
+                        follower->decoupled_ = false;
+                        follower->delayedUntilMs_ = 0;
+                        follower->setState(NORMAL);
+                        pthread_mutex_unlock(&follower->leaderMutex_);
+
+                        // Ensure we resume sending status so leader updates heartbeat timestamp
+                        follower->stopSendingStatus_ = false;
+                        // Send an immediate status and a couple command to rejoin
+                        StatusUpdateMessage status{};
+                        status.type = MessageType::STATUS_UPDATE;
+                        status.info = follower->info_;
+                        status.timestamp = nowMs();
+                        sendto(follower->clientSocket_, &status, sizeof(status), 0,
+                               (const struct sockaddr*)&follower->leaderAddr_, sizeof(follower->leaderAddr_));
+                        follower->tryingRejoin_ = true;
+                        follower->lastReconnectAttemptMs_ = nowMs();
+                        follower->sendCoupleCommandToLeader(true);
                     }
                     break;
                 }
@@ -367,10 +413,12 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
         TrafficLightStatus light = LIGHT_GREEN;
         std::int64_t delayedUntil = 0;
         bool isDecoupled = false;
+        bool tryingRejoin = false;
         pthread_mutex_lock(&follower->leaderMutex_);
         light = follower->trafficLight_;
         delayedUntil = follower->delayedUntilMs_;
         isDecoupled = follower->decoupled_;
+        tryingRejoin = follower->tryingRejoin_;
         pthread_mutex_unlock(&follower->leaderMutex_);
 
         // Determine which vehicle to follow:
@@ -387,7 +435,7 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
 
         double gap = refPos - follower->info_.position;
 
-                // If we are delaying start after GREEN, hold still until the timer expires
+        // If we are delaying start after GREEN, hold still until the timer expires
         const std::int64_t now = nowMs();
         if (!isDecoupled && light == LIGHT_GREEN && delayedUntil > now) {
             follower->info_.speed = 0.0;
@@ -400,7 +448,8 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
         }
 
         // Detect "left-behind" on GREEN when leader is moving and this follower is still stopped
-        if (!isDecoupled && light == LIGHT_GREEN) {
+        // Don't mark decoupled if we're currently attempting to rejoin after removal
+        if (!isDecoupled && !tryingRejoin && light == LIGHT_GREEN) {
             const bool leaderMoving = (leaderSp > 0.5);
             const bool thisStopped = (follower->info_.speed < LEFT_BEHIND_STOPPED_EPS);
             if (leaderMoving && thisStopped && gap > LEFT_BEHIND_GAP_THRESHOLD) {
@@ -523,11 +572,20 @@ void* FollowingVehicle::sendStatusThreadEntry(void* arg) {
     while (follower->clientRunning_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(TIMESTEP_MS));
 
+        // Check if we should stop sending status
+        std::int64_t now = nowMs();
+        if (follower->stopSendingStatus_ && now > follower->resumeSendingMs_) {
+            follower->stopSendingStatus_ = false;
+        }
+        if (follower->stopSendingStatus_) {
+            continue;
+        }
+
         StatusUpdateMessage status{};
         status.type = MessageType::STATUS_UPDATE;
         // Copy current info (no deep locks needed for simple struct copy)
         status.info = follower->info_;
-        status.timestamp = nowMs();
+        status.timestamp = now;
 
         // Send to leader (using sendto since socket is not connected)
         ssize_t sentBytes = sendto(follower->clientSocket_, &status, sizeof(status), 0,
@@ -686,6 +744,16 @@ void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
                 follower->targetSpeed_ = follower->info_.speed * 0.6;
                 follower->setState(LOW_ENERGY);
                 break;
+            case 5: // Simulate communication lost 3 seconds
+                std::cout << "[FOLLOWER " << follower->info_.id << "] Simulating communication loss for 3 seconds...\n";
+                follower->stopSendingStatus_ = true;
+                follower->resumeSendingMs_ = nowMs() + 3000;
+                break;
+            case 6: // Simulate communication lost 5 seconds
+                std::cout << "[FOLLOWER " << follower->info_.id << "] Simulating communication loss for 5 seconds...\n";
+                follower->stopSendingStatus_ = true;
+                follower->resumeSendingMs_ = nowMs() + 5000 + 15000; // 5s + 15s delay
+                break;
             default:
                 continue; // Skip unknown events
         }
@@ -810,6 +878,8 @@ int main(int argc, char* argv[]) {
             std::cout << "2: Traffic light GREEN\n";
             std::cout << "3: Run out of energy\n";
             std::cout << "4: Set delay after next GREEN (seconds)\n";
+            std::cout << "5: Simulate comm loss (3s)\n";
+            std::cout << "6: Simulate comm loss (5s)\n";
             std::cout << "0: Exit\n";
             std::cout << "Enter choice: ";
             std::cin >> choice;

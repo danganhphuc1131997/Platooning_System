@@ -486,12 +486,24 @@ void* LeadingVehicle::displayThreadEntry(void* arg) {
     while (leader->serverRunning_) {
         // Build display under mutex to get consistent snapshot
         pthread_mutex_lock(&leader->mutex_);
+        LeaderState state = leader->getState();
+        std::string stateStr;
+        switch (state) {
+            case NORMAL: stateStr = "NORMAL"; break;
+            case ERROR: stateStr = "ERROR"; break;
+            case STOPPING: stateStr = "STOPPING"; break;
+            case STOPPED: stateStr = "STOPPED"; break;
+            case STARTING: stateStr = "STARTING"; break;
+            case LOW_ENERGY: stateStr = "LOW_ENERGY"; break;
+            case DEGRADED: stateStr = "DEGRADED"; break;
+            default: stateStr = "UNKNOWN"; break;
+        }
         // Clear and print header + platoon list
         std::cout << "\033[2J\033[H"; // clear screen + home
         std::cout << "\n\033[1;36m================== LEADER ==================\033[0m\n";
-        std::cout << "ID: " << leader->info_.id
-                  << "  Position: " << leader->info_.position
-                  << "  Speed: " << leader->info_.speed << "\n";
+        std::cout << "Position: " << leader->info_.position
+                  << "  Speed: " << leader->info_.speed
+                  << "  State: " << stateStr << "\n";
         std::cout << "Platoon vehicles:\n";
         for (const auto &v : leader->platoonState_.vehicles) {
             std::cout << "Vehicle ID: " << v.id
@@ -568,6 +580,15 @@ void* LeadingVehicle::runThreadEntry(void* arg) {
                     leader->info_.speed = std::min(targetSpeed, leader->info_.speed + accel * dt);
                 }
                 break;
+            case DEGRADED:
+                // Lower speed to 48 m/s for safety
+                targetSpeed = 48.0;
+                if (leader->info_.speed > targetSpeed) {
+                    leader->info_.speed = std::max(targetSpeed, leader->info_.speed - decel * dt);
+                } else if (leader->info_.speed < targetSpeed) {
+                    leader->info_.speed = std::min(targetSpeed, leader->info_.speed + accel * dt);
+                }
+                break;
             default:
                 break;
         }
@@ -595,24 +616,53 @@ void* LeadingVehicle::runThreadEntry(void* arg) {
 void* LeadingVehicle::heartbeatThreadEntry(void* arg) {
     LeadingVehicle* leader = static_cast<LeadingVehicle*>(arg);
     const int HEARTBEAT_INTERVAL_MS = 1000; // Check every second
-    const int TIMEOUT_MS = 3000; // Timeout for follower heartbeat
-
+    const int TIMEOUT_MS = 5000; // Timeout for follower heartbeat - remove after 5 seconds
+    const int DEGRADED_MS = 1000; // Enter degraded mode after 1 second of heartbeat timeout 
+    
     while (leader->serverRunning_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(HEARTBEAT_INTERVAL_MS));
         std::int64_t currentTime = nowMs();
 
         std::vector<int> toRemove;
+        bool allFollowersOk = true;
         pthread_mutex_lock(&leader->mutex_);
         for (auto it = leader->platoonState_.vehicles.begin(); it != leader->platoonState_.vehicles.end(); ) {
             if (it->id == leader->info_.id) { ++it; continue; } // skip leader
-
-            if (it->lastHeartbeatMs == 0 || (currentTime - it->lastHeartbeatMs) > TIMEOUT_MS) {
+            const std::int64_t age = (it->lastHeartbeatMs == 0) ? (INT64_MAX) : (currentTime - it->lastHeartbeatMs);
+            if (age > DEGRADED_MS) {
+                allFollowersOk = false;
+            }
+            if ((age > DEGRADED_MS) && (age < TIMEOUT_MS) && leader->getState() != DEGRADED) {
+                std::cout << "[HEARTBEAT] Follower " << it->id << " heartbeat delayed. Entering DEGRADED mode.\n";
+                leader->setState(DEGRADED);
+            } else if (it->lastHeartbeatMs == 0 || age > TIMEOUT_MS) {
                 std::cout << "[HEARTBEAT] Follower " << it->id << " timed out. Removing from platoon.\n";
+
                 toRemove.push_back(it->id);
                 it = leader->platoonState_.vehicles.erase(it);
+
+                // Send remove notification to the follower
+                RemoveVehicleMessage removeMsg{};
+                removeMsg.type = MessageType::REMOVE_VEHICLE;
+                removeMsg.vehicleId = it->id;
+                removeMsg.timestamp = nowMs();
+                struct sockaddr_in followerAddr{};
+                followerAddr.sin_family = AF_INET;
+                followerAddr.sin_addr.s_addr = it->ipAddress;
+                followerAddr.sin_port = it->port;
+                ssize_t sentBytes = sendto(leader->serverSocket_, &removeMsg, sizeof(removeMsg), 0,
+                                           (const struct sockaddr*)&followerAddr, sizeof(followerAddr));
+                if (sentBytes < 0) {
+                    std::cerr << "Failed to send remove notification to follower " << it->id << std::endl;
+                }
             } else {
                 ++it;
             }
+        }
+        // If all followers are ok and leader is in degraded, exit degraded mode
+        if (allFollowersOk && leader->getState() == DEGRADED) {
+            std::cout << "[HEARTBEAT] All followers recovered. Exiting DEGRADED mode.\n";
+            leader->setState(NORMAL);
         }
         // (legacy maps removed; VehicleInfo entries already erased above)
         pthread_mutex_unlock(&leader->mutex_);
