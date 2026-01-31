@@ -51,6 +51,9 @@ private:
     FollowerState state_;
     std::atomic<bool> clientRunning_;
 
+    std::atomic<bool> isLeader_;  // Flag to indicate if transitioned to leader
+    std::atomic<bool> leaderRunning_; // Leader mode running flag
+
     bool energyAlertSent_; // Flag to send energy alert only once
     double targetSpeed_; // Target speed for gradual changes
 
@@ -104,6 +107,23 @@ private:
     void createClientSocket();
     void sendStatusToLeader();
     void sendCoupleCommandToLeader(bool couple = true);
+
+    // Leader mode functions
+    void transitionToLeader();
+    void startLeaderMode();
+    void sendPlatoonStateAsLeader();
+    pthread_t leaderRecvThread_{};
+    pthread_t leaderRunThread_{};
+    pthread_t leaderDisplayThread_{};
+    pthread_t leaderStatusThread_{};
+    pthread_t leaderHeartbeatThread_{};
+    pthread_t leaderEventSenderThread_{};
+    static void* leaderRecvThreadEntry(void* arg);
+    static void* leaderRunThreadEntry(void* arg);
+    static void* leaderDisplayThreadEntry(void* arg);
+    static void* leaderStatusThreadEntry(void* arg);
+    static void* leaderHeartbeatThreadEntry(void* arg);
+    static void* leaderEventSenderThreadEntry(void* arg);
 };
 
 #endif // FOLLOW_H
