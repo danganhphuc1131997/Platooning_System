@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <cstring>
 
 // Vehicle operating modes
 enum VehicleMode : std::uint8_t {
@@ -25,14 +26,17 @@ struct VehicleInfo {
     uint32_t ipAddress; // IP address (network byte order)
     uint16_t port;      // UDP port number
         std::int64_t lastHeartbeatMs; // monotonic timestamp (ms) of last heartbeat
-    // TODO: Add more if needed: obstacleDetected, clock, etc.
+    
+    VehicleInfo() {
+        std::memset(this, 0, sizeof(*this));
+    }
 };
 
 // Struct to hold
 struct PlatoonState {
     std::vector<VehicleInfo> vehicles;  // List of vehicles in the platoon
-    int leaderId;  // ID of the current leader
-    int followerCount; // Number of followers
+    int leaderId = -1;  // ID of the current leader
+    int followerCount = 0; // Number of followers
     // TODO: Add metadata: timestamp, etc.
 };
 

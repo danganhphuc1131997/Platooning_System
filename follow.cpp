@@ -14,11 +14,16 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+// ANSI colors for terminal output
+static const char* COLOR_RED="[31m";
+static const char* COLOR_RESET="[0m";
+
 // Constructor
 FollowingVehicle::FollowingVehicle(int id,
                                  double initialSpeed,
                                  double initialPosition)
-    : state_(NORMAL), clientRunning_(false), energyAlertSent_(false), clientSocket_(-1) {
+    : state_(NORMAL), clientRunning_(false), energyAlertSent_(false), clientSocket_(-1),
+      isLeader_(false), leaderRunning_(false) {
     info_.id = id;
     info_.position = initialPosition;
     info_.speed = std::round(initialSpeed);
@@ -115,7 +120,7 @@ void FollowingVehicle::sendCoupleCommandToLeader(bool couple) {
     } else {
         std::cout << "Sent couple command (id=" << cmd.info.id
                   << " pos=" << cmd.info.position
-                  << " speed=" << cmd.info.speed << ")\n";
+                  << " speed=" << cmd.info.speed << ")" << std::endl;
     }
 }
 
@@ -150,14 +155,23 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
     FollowingVehicle* follower = static_cast<FollowingVehicle*>(arg);
     const size_t BUFFER_SIZE = 4096;
     char* buffer = new char[BUFFER_SIZE];
+    
+    std::cout << "[RECV] Thread started." << std::endl;
 
     while (follower->clientRunning_) {
         struct sockaddr_in senderAddr{};
         socklen_t addrLen = sizeof(senderAddr);
         ssize_t recvLen = recvfrom(follower->clientSocket_, buffer, BUFFER_SIZE, 0,
                                    (struct sockaddr*)&senderAddr, &addrLen);
+        if (recvLen < 0) {
+             if (errno != EAGAIN && errno != EINTR) {
+                 std::cerr << "[RECV] Error: " << strerror(errno) << std::endl;
+             }
+             continue;
+        }
         if (recvLen >= 1) {
             MessageType msgType = static_cast<MessageType>(buffer[0]);
+            
             switch (msgType) {
                 case STATUS_UPDATE: {
                     if (static_cast<size_t>(recvLen) < sizeof(StatusUpdateMessage)) break;
@@ -260,7 +274,19 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     PlatoonStateMessage psMsg;
                     std::memcpy(&psMsg, buffer, sizeof(psMsg));
 
-                    // Find my index in the platoon list (sorted by position descending: leader first)
+                    // DEBUG RECV
+                    /* 
+                    if (psMsg.vehicleCount > 1) {
+                         for (int i=0; i<psMsg.vehicleCount; ++i) {
+                             if (psMsg.vehicles[i].id < 0 && psMsg.vehicles[i].id != -1) {
+                                 std::cerr << "[CRITICAL_RECV] Received CORRUPT ID " << psMsg.vehicles[i].id << " at index " << i << std::endl;
+                             }
+                         }
+                    }
+                    */
+
+                    pthread_mutex_lock(&follower->leaderMutex_);
+                    // Update platoon state snapshot
                     int myIndex = -1;
                     for (int i = 0; i < psMsg.vehicleCount && i < MAX_PLATOON_VEHICLES; ++i) {
                         if (psMsg.vehicles[i].id == follower->info_.id) {
@@ -269,7 +295,20 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                         }
                     }
 
-                    pthread_mutex_lock(&follower->leaderMutex_);
+                    // Auto-rejoin if dropped from platoon
+                    if (myIndex == -1 && !follower->isLeader_) {
+                         std::int64_t now = nowMs();
+                         if (now - follower->lastReconnectAttemptMs_ > 2000) {
+                             follower->lastReconnectAttemptMs_ = now;
+                             std::cout << "[FOLLOWER " << follower->info_.id << "] Not in platoon list (Leader " << psMsg.leaderId << "). Attempting to rejoin...\n";
+                             
+                             // Unlock to send
+                             pthread_mutex_unlock(&follower->leaderMutex_);
+                             follower->sendCoupleCommandToLeader();
+                             pthread_mutex_lock(&follower->leaderMutex_);
+                         }
+                    }
+
                     // Update platoon state snapshot
                     follower->platoonState_.leaderId = psMsg.leaderId;
                     follower->platoonState_.vehicles.clear();
@@ -339,7 +378,7 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     RemoveVehicleMessage removeMsg;
                     std::memcpy(&removeMsg, buffer, sizeof(removeMsg));
                     if (removeMsg.vehicleId == follower->info_.id) {
-                        std::cout << "[FOLLOWER " << follower->info_.id << "] Received remove notification. Will request rejoin.\n";
+                        std::cout << COLOR_RED << "[FOLLOWER " << follower->info_.id << "] Received remove notification. Will request rejoin.\n" << COLOR_RESET;
                         // Reset local platoon snapshot and mark for periodic rejoin attempts
                         pthread_mutex_lock(&follower->leaderMutex_);
                         follower->leaderPosition_ = 0.0;
@@ -367,6 +406,80 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                         follower->tryingRejoin_ = true;
                         follower->lastReconnectAttemptMs_ = nowMs();
                         follower->sendCoupleCommandToLeader(true);
+                    }
+                    break;
+                }
+                case LEAVE_PLATOON: {
+                    // If receive from leader, it means this vehicle will be new leader
+                    if (static_cast<size_t>(recvLen) < sizeof(LeavePlatoonMessage)) break;
+                    LeavePlatoonMessage leaveMsg;
+                    std::memcpy(&leaveMsg, buffer, sizeof(leaveMsg));
+                    std::cout << "Received LEAVE_PLATOON command for vehicle "
+                              << leaveMsg.vehicleId << std::endl;
+                    // If the vehicle leaving is the current leader, we become the new leader
+                    if (leaveMsg.vehicleId == follower->platoonState_.leaderId) {
+                        std::cout << "\n========================================\n";
+                        std::cout << "TRANSITION: Becoming new leader as vehicle " << leaveMsg.vehicleId << " left platoon.\n";
+                        std::cout << "========================================\n\n";
+                        
+                        // // Transition to leader mode within same process
+                        follower->transitionToLeader();
+                        return nullptr;
+                    } else if (leaveMsg.vehicleId == follower->rearVehicleInfo_.id) {
+                        // Leave command from rear vehicle, send it to our front vehicle
+                        // and update our rear vehicle info to the vehicle behind the one that left
+                        pthread_mutex_lock(&follower->leaderMutex_);
+                        VehicleInfo front = follower->frontVehicleInfo_;
+                        pthread_mutex_unlock(&follower->leaderMutex_);
+                        if (front.id != -1 && front.ipAddress != 0 && front.port != 0) {
+                            struct sockaddr_in frontAddr{};
+                            frontAddr.sin_family = AF_INET;
+                            frontAddr.sin_addr.s_addr = front.ipAddress;
+                            frontAddr.sin_port = front.port;
+                            sendto(follower->clientSocket_, &leaveMsg, sizeof(leaveMsg), 0,
+                                   (const struct sockaddr*)&frontAddr, sizeof(frontAddr));
+                        }
+                        // Update rear vehicle info to the one behind the leaving vehicle
+                        pthread_mutex_lock(&follower->leaderMutex_);
+                        auto it = std::find_if(
+                            follower->platoonState_.vehicles.begin(),
+                            follower->platoonState_.vehicles.end(),
+                            [&](const VehicleInfo& v){ return v.id == leaveMsg.vehicleId; });
+                        if (it != follower->platoonState_.vehicles.end() && (it + 1) != follower->platoonState_.vehicles.end()) {
+                            follower->rearVehicleInfo_ = *(it + 1);
+                        } else {
+                            follower->rearVehicleInfo_.id = -1; // no rear vehicle
+                        }
+                        pthread_mutex_unlock(&follower->leaderMutex_);
+                    } else if (leaveMsg.vehicleId == follower->frontVehicleInfo_.id) {
+                        // Leave command from front vehicle, update front vehicle info
+                        pthread_mutex_lock(&follower->leaderMutex_);
+                        
+                        // Check if the leaving vehicle is the leader
+                        if (leaveMsg.vehicleId == follower->platoonState_.leaderId) {
+                            // Leader is leaving, find the new leader (first vehicle after old leader)
+                            if (follower->platoonState_.vehicles.size() > 1) {
+                                // New leader is the second vehicle in the list
+                                follower->frontVehicleInfo_ = follower->platoonState_.vehicles[1];
+                                follower->platoonState_.leaderId = follower->platoonState_.vehicles[1].id;
+                                std::cout << "[UPDATE] Front vehicle updated to new leader ID " 
+                                         << follower->frontVehicleInfo_.id << "\n";
+                            } else {
+                                follower->frontVehicleInfo_.id = -1; // no front vehicle
+                            }
+                        } else {
+                            // Regular follower leaving, find the vehicle before it
+                            auto it = std::find_if(
+                                follower->platoonState_.vehicles.begin(),
+                                follower->platoonState_.vehicles.end(),
+                                [&](const VehicleInfo& v){ return v.id == leaveMsg.vehicleId; });
+                            if (it != follower->platoonState_.vehicles.end() && it != follower->platoonState_.vehicles.begin()) {
+                                follower->frontVehicleInfo_ = *(it - 1);
+                            } else {
+                                follower->frontVehicleInfo_.id = -1; // no front vehicle    
+                            }
+                        }
+                        pthread_mutex_unlock(&follower->leaderMutex_);
                     }
                     break;
                 }
@@ -627,6 +740,7 @@ void* FollowingVehicle::displayThreadEntry(void* arg) {
         double frontSp = follower->frontVehicleInfo_.speed;
         std::uint8_t frontMode = follower->frontVehicleInfo_.mode;
         int rearId = follower->rearVehicleInfo_.id;
+        int leaderId = follower->platoonState_.leaderId;
         pthread_mutex_unlock(&follower->leaderMutex_);
 
         // Calculate gap to front vehicle (or leader if front is leader/unknown)
@@ -648,15 +762,16 @@ void* FollowingVehicle::displayThreadEntry(void* arg) {
             case LOW_ENERGY: stateStr = "LOW_ENERGY"; break;
             default: stateStr = "UNKNOWN"; break;
         }
-        std::cout << "\033[2J\033[H"; // clear screen + home
+        // std::cout << "\033[2J\033[H"; // clear screen + home
         std::cout << "============ FOLLOWER " << follower->info_.id << " ============\n";
         std::cout << "Position: " << follower->info_.position
                   << "  Speed: " << follower->info_.speed
                   << "  State: " << stateStr << "\n";
         std::cout << "Gap to front: " << gap << " m\n";
-        std::cout << "Front vehicle: " << (frontId == -1 ? "Leader" : ("ID " + std::to_string(frontId)))
+        std::cout << "Front vehicle: " << ((frontId == -1 || frontMode == LeaderMode) ? ("Leader (ID " + std::to_string(frontId == -1 ? leaderId : frontId) + ")") : ("ID " + std::to_string(frontId)))
                   << " (pos=" << refPos << ", spd=" << (frontId == -1 || frontMode == LeaderMode ? leaderSp : frontSp) << ")\n";
         std::cout << "Rear vehicle: " << (rearId == -1 ? "None" : ("ID " + std::to_string(rearId))) << "\n";
+        std::cout << std::flush;
     }
     return nullptr;
 }
@@ -902,6 +1017,7 @@ int main(int argc, char* argv[]) {
 
     // Normal follower mode
     int id = FOLLOWER_INITIAL_ID;
+    setbuf(stdout, NULL);
     double initialSpeed = FOLLOWER_INITIAL_SPEED;
     double initialPosition = FOLLOWER_INITIAL_POSITION;
     if (argc >= 2) id = std::stoi(argv[1]);
@@ -947,3 +1063,653 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 
+// ============== LEADER MODE FUNCTIONS ==============
+
+// Transition from follower to leader mode
+void FollowingVehicle::transitionToLeader() {
+    std::cout << "[TRANSITION] Stopping follower mode...\n";
+    
+    // Stop follower threads
+    clientRunning_ = false;
+    
+    // Signal event thread to wake up
+    pthread_mutex_lock(&eventMutex_);
+    pthread_cond_broadcast(&eventCv_);
+    pthread_mutex_unlock(&eventMutex_);
+    
+    // Wait for all follower threads to finish
+    std::cout << "[TRANSITION] Waiting for follower threads to finish...\n";
+    if (!pthread_equal(pthread_self(), recvThread_)) {
+        pthread_join(recvThread_, nullptr);
+    } else {
+        std::cout << "[TRANSITION] Skipping join of recvThread (self)\n";
+    }
+    pthread_join(runThread_, nullptr);
+    pthread_join(sendStatusThread_, nullptr);
+    pthread_join(displayThread_, nullptr);
+    pthread_join(eventSenderThread_, nullptr);
+    
+    std::cout << "[TRANSITION] All follower threads stopped.\n";
+    std::cout << "[TRANSITION] Waiting for old leader to release port...\n";
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    
+    // Update to leader mode
+    info_.mode = LeaderMode;
+    isLeader_ = true;
+    
+    // Update platoon state - this vehicle is now the leader
+    pthread_mutex_lock(&leaderMutex_);
+    platoonState_.leaderId = info_.id;
+    
+    // Remove old leader from platoon vehicles
+    platoonState_.vehicles.erase(
+        std::remove_if(
+            platoonState_.vehicles.begin(),
+            platoonState_.vehicles.end(),
+            [this](const VehicleInfo& v){ return v.mode == LeaderMode && v.id != info_.id; }),
+        platoonState_.vehicles.end());
+    
+    // Update this vehicle to leader in platoon state
+    for (auto& v : platoonState_.vehicles) {
+        if (v.id == info_.id) {
+            v.mode = LeaderMode;
+            v.ipAddress = htonl(INADDR_LOOPBACK);
+            v.port = htons(SERVER_PORT);
+        } else {
+             // Reset heartbeat to avoid immediate timeout during transition.
+             // We add a generous 20-second buffer relative to 'now' to allow
+             // the new leader socket to bind and followers to reconnect.
+             v.lastHeartbeatMs = nowMs() + 20000;
+        }
+    }
+    pthread_mutex_unlock(&leaderMutex_);
+    
+    std::cout << "[TRANSITION] Starting leader mode...\\n";
+    std::cout << "New Leader ID: " << info_.id << "\\n";
+    std::cout << "Position: " << info_.position << " m\\n";
+    std::cout << "Speed: " << info_.speed << " m/s\\n";
+
+    // Set original speed to current speed or target speed
+    originalSpeed_ = info_.speed;
+    setState(NORMAL); // Reset state to NORMAL
+    
+    // Start leader mode
+    startLeaderMode();
+}
+
+
+void FollowingVehicle::startLeaderMode() {
+    // Close old follower socket
+    if (clientSocket_ >= 0) {
+        ::close(clientSocket_);
+    }
+    
+    // Create server socket for leader
+    clientSocket_ = socket(AF_INET, SOCK_DGRAM, 0);
+    if (clientSocket_ < 0) {
+        std::cerr << "Failed to create leader socket: " << strerror(errno) << std::endl;
+        return;
+    }
+    
+    int opt = 1;
+    setsockopt(clientSocket_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    // setsockopt(clientSocket_, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)); // DISABLED to prevent Zombie leaders
+    
+    // Set SO_LINGER to force immediate close
+    struct linger sl;
+    sl.l_onoff = 1;
+    sl.l_linger = 0;
+    setsockopt(clientSocket_, SOL_SOCKET, SO_LINGER, &sl, sizeof(sl));
+    
+    // Bind to leader port
+    struct sockaddr_in serverAddr{};
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+    serverAddr.sin_port = htons(SERVER_PORT);
+    
+    // Try binding with more retries and longer delays
+    int retries = 15;
+    std::cout << "[LEADER] Attempting to bind to port " << SERVER_PORT << "...\\n";
+    while (retries-- > 0) {
+        if (bind(clientSocket_, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) >= 0) {
+            std::cout << "\\n[LEADER] ✓ Successfully bound to port " << SERVER_PORT << "\\n";
+            break;
+        }
+        if (retries > 0) {
+            std::cout << "[LEADER] Port still in use, waiting... (" << retries << " retries left)\\n";
+            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        }
+    }
+    
+    if (retries < 0) {
+        std::cerr << "[LEADER] Failed to bind leader socket after retries: " << strerror(errno) << std::endl;
+        return;
+    }
+    
+    // Update info
+    info_.ipAddress = htonl(INADDR_LOOPBACK);
+    info_.port = htons(SERVER_PORT);
+    
+    // Start leader threads
+    leaderRunning_ = true;
+    pthread_create(&leaderRecvThread_, nullptr, leaderRecvThreadEntry, this);
+    pthread_create(&leaderRunThread_, nullptr, leaderRunThreadEntry, this);
+    pthread_create(&leaderDisplayThread_, nullptr, leaderDisplayThreadEntry, this);
+    pthread_create(&leaderStatusThread_, nullptr, leaderStatusThreadEntry, this);
+    pthread_create(&leaderHeartbeatThread_, nullptr, leaderHeartbeatThreadEntry, this);
+    
+    // Restart event thread to continue reading from FIFO
+    // Note: The FIFO is already open by the child process, so we just need to keep reading
+    clientRunning_ = true;  // Re-enable for event thread
+    pthread_create(&eventThread_, nullptr, eventSimulationThreadEntry, this);
+    pthread_create(&eventSenderThread_, nullptr, leaderEventSenderThreadEntry, this);
+    
+    std::cout << "[LEADER] All leader threads started (including event handling)\\n";
+}
+
+void FollowingVehicle::sendPlatoonStateAsLeader() {
+    PlatoonStateMessage psMsg{};
+    psMsg.type = MessageType::PLATOON_STATE;
+    psMsg.timestamp = nowMs();
+    
+    pthread_mutex_lock(&leaderMutex_);
+    psMsg.leaderId = platoonState_.leaderId;
+    
+    // Sort vehicles by position descending
+    std::vector<VehicleInfo> sorted = platoonState_.vehicles;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const VehicleInfo& a, const VehicleInfo& b) { return a.position > b.position; });
+    
+    psMsg.vehicleCount = std::min(static_cast<int>(sorted.size()), MAX_PLATOON_VEHICLES);
+    for (int i = 0; i < psMsg.vehicleCount; ++i) {
+        psMsg.vehicles[i] = sorted[i];
+    }
+    
+    // DEBUG: Print what we are sending
+    if (psMsg.vehicleCount > 1) {
+         // std::cerr << "[DEBUG_SEND] Sending PLATOON_STATE (" << psMsg.vehicleCount << " vehicles):" << std::endl;
+         for (int i=0; i<psMsg.vehicleCount; ++i) {
+             // std::cerr << "  [" << i << "] ID=" << psMsg.vehicles[i].id 
+             //           << " Mode=" << (int)psMsg.vehicles[i].mode 
+             //           << " Pos=" << psMsg.vehicles[i].position << std::endl;
+             if (psMsg.vehicles[i].id < 0 && psMsg.vehicles[i].id != -1) {
+                 std::cerr << "[CRITICAL_WARNING] Sending CORRUPT ID " << psMsg.vehicles[i].id << " at index " << i << std::endl;
+             }
+         }
+    }
+
+        // Send to each follower
+    for (const auto& v : platoonState_.vehicles) {
+        if (v.id == info_.id) continue;
+        if (v.ipAddress == 0 || v.port == 0) continue;
+        
+        struct sockaddr_in dest{};
+        dest.sin_family = AF_INET;
+        dest.sin_addr.s_addr = v.ipAddress;
+        dest.sin_port = v.port;
+        // DEBUG:
+        // std::cout << "[LEADER_SEND] Sending PLATOON_STATE to " << v.id << " (" << ntohs(v.port) << ")\n";
+        
+        sendto(clientSocket_, &psMsg, sizeof(psMsg), 0,
+               (struct sockaddr*)&dest, sizeof(dest));
+    }
+    pthread_mutex_unlock(&leaderMutex_);
+}
+
+// Leader receive thread
+void* FollowingVehicle::leaderRecvThreadEntry(void* arg) {
+    FollowingVehicle* leader = static_cast<FollowingVehicle*>(arg);
+    const size_t BUFFER_SIZE = 4096;
+    char* buffer = new char[BUFFER_SIZE];
+    
+    std::cout << "[LEADER_RECV] Thread started on socket " << leader->clientSocket_ << std::endl;
+
+    while (leader->leaderRunning_) {
+        struct sockaddr_in senderAddr{};
+        socklen_t addrLen = sizeof(senderAddr);
+        ssize_t recvLen = recvfrom(leader->clientSocket_, buffer, BUFFER_SIZE, 0,
+                                   (struct sockaddr*)&senderAddr, &addrLen);
+        if (recvLen < 0) {
+             // Only print if not EAGAIN/EINTR
+             if (errno != EAGAIN && errno != EINTR) {
+                 std::cerr << "[LEADER_RECV] Error: " << strerror(errno) << std::endl;
+             }
+             continue;
+        }
+
+        if (recvLen >= 1) {
+            MessageType msgType = static_cast<MessageType>(buffer[0]);
+            
+            switch (msgType) {
+                case STATUS_UPDATE: {
+                    if (static_cast<size_t>(recvLen) < sizeof(StatusUpdateMessage)) break;
+                    StatusUpdateMessage status;
+                    std::memcpy(&status, buffer, sizeof(status));
+                    
+                    if (status.info.id <= 0) {
+                        std::cerr << "[LEADER_RECV] Ignored STATUS_UPDATE with invalid ID " << status.info.id << "\n";
+                        break;
+                    }
+
+                    pthread_mutex_lock(&leader->leaderMutex_);
+                    auto it = std::find_if(
+                        leader->platoonState_.vehicles.begin(),
+                        leader->platoonState_.vehicles.end(),
+                        [&](const VehicleInfo& v){ return v.id == status.info.id; });
+                    if (it != leader->platoonState_.vehicles.end()) {
+                        it->position = status.info.position;
+                        it->speed = status.info.speed;
+                        it->ipAddress = senderAddr.sin_addr.s_addr;
+                        it->port = senderAddr.sin_port;
+                        it->lastHeartbeatMs = nowMs();
+                    } else {
+                        // Add new follower
+                        VehicleInfo fi = status.info;
+                        fi.ipAddress = senderAddr.sin_addr.s_addr;
+                        fi.port = senderAddr.sin_port;
+                        fi.lastHeartbeatMs = nowMs();
+                        leader->platoonState_.vehicles.push_back(fi);
+                        std::cout << "[LEADER] Added new vehicle " << fi.id << " to platoon\n";
+                    }
+                    pthread_mutex_unlock(&leader->leaderMutex_);
+                    break;
+                }
+                case COUPLE_COMMAND: {
+                    if (static_cast<size_t>(recvLen) < sizeof(CoupleCommandMessage)) break;
+                    CoupleCommandMessage cmd;
+                    std::memcpy(&cmd, buffer, sizeof(cmd));
+                    
+                    if (cmd.info.id <= 0) {
+                         std::cerr << "[LEADER_RECV] Ignored COUPLE_COMMAND with invalid ID " << cmd.info.id << "\n";
+                         break;
+                    }
+                    
+                    std::cout << "[LEADER] Received " << (cmd.couple ? "COUPLE" : "DECOUPLE") 
+                              << " from " << cmd.info.id << std::endl;
+                    
+                    pthread_mutex_lock(&leader->leaderMutex_);
+                    if (cmd.couple) {
+                         auto it = std::find_if(
+                            leader->platoonState_.vehicles.begin(),
+                            leader->platoonState_.vehicles.end(),
+                            [&](const VehicleInfo& v){ return v.id == cmd.info.id; });
+                        if (it == leader->platoonState_.vehicles.end()) {
+                            VehicleInfo fi = cmd.info;
+                            fi.ipAddress = senderAddr.sin_addr.s_addr;
+                            fi.port = senderAddr.sin_port;
+                            fi.lastHeartbeatMs = nowMs();
+                            leader->platoonState_.vehicles.push_back(fi);
+                            std::cout << "[LEADER] Added new vehicle " << fi.id << " to platoon" << std::endl;
+                        } else {
+                            it->position = cmd.info.position;
+                            it->speed = cmd.info.speed;
+                            it->ipAddress = senderAddr.sin_addr.s_addr;
+                            it->port = senderAddr.sin_port;
+                            it->lastHeartbeatMs = nowMs();
+                        }
+                    } else {
+                        leader->platoonState_.vehicles.erase(
+                            std::remove_if(
+                                leader->platoonState_.vehicles.begin(),
+                                leader->platoonState_.vehicles.end(),
+                                [&](const VehicleInfo& v){ return v.id == cmd.info.id; }),
+                            leader->platoonState_.vehicles.end());
+                    }
+                    pthread_mutex_unlock(&leader->leaderMutex_);
+                    leader->sendPlatoonStateAsLeader();
+                    break;
+                }
+                case TRAFFIC_LIGHT_ALERT: {
+                    if (static_cast<size_t>(recvLen) < sizeof(TrafficLightMessage)) break;
+                    TrafficLightMessage tlMsg;
+                    std::memcpy(&tlMsg, buffer, sizeof(tlMsg));
+                    TrafficLightStatus alert = static_cast<TrafficLightStatus>(tlMsg.status);
+                     if (alert == LIGHT_RED) {
+                        leader->setState(STOPPING);
+                    } else if (alert == LIGHT_GREEN) {
+                        leader->setState(STARTING);
+                    }
+                    break;
+                }
+                case ENERGY_DEPLETION_ALERT: {
+                    if (static_cast<size_t>(recvLen) < sizeof(EnergyDepletionMessage)) break;
+                    std::cout << "[LEADER] Low energy alert. Reducing speed.\n";
+                    leader->setState(LOW_ENERGY);
+                    leader->targetSpeed_ = leader->originalSpeed_ * 0.6;
+                    break;
+                }
+                 case ENERGY_RESTORED: {
+                    std::cout << "[LEADER] Energy restored. Stopping at gas station.\n";
+                    leader->setState(STOPPING);
+                    leader->gasStationStop_ = true;
+                    break;
+                }
+                case GAS_STATION_ALERT: {
+                     std::cout << "[LEADER] Gas station alert. Stopping.\n";
+                     leader->setState(STOPPING);
+                     leader->gasStationStop_ = false;
+                     break;
+                }
+                default: break;
+            }
+        }
+    }
+    delete[] buffer;
+    return nullptr;
+}
+
+// Leader run thread
+void* FollowingVehicle::leaderRunThreadEntry(void* arg) {
+    FollowingVehicle* leader = static_cast<FollowingVehicle*>(arg);
+    const int TIMESTEP_MS = 100;
+    const double dt = TIMESTEP_MS / 1000.0;
+    const double accel = 8;
+    const double decel = 12;
+
+    while (leader->leaderRunning_) {
+        // Simple state machine for promoted leader
+        FollowerState st = leader->getState();
+        double target = (st == NORMAL) ? leader->originalSpeed_ : leader->info_.speed;
+        
+        switch (st) {
+             case NORMAL:
+                if (leader->info_.speed < target) {
+                    leader->info_.speed = std::min(target, leader->info_.speed + accel * dt);
+                } else if (leader->info_.speed > target) {
+                    leader->info_.speed = std::max(target, leader->info_.speed - decel * dt);
+                }
+                break;
+            case STOPPING:
+                leader->info_.speed = std::max(0.0, leader->info_.speed - decel * dt * 1.2);
+                if (leader->info_.speed <= 0.001) {
+                    leader->info_.speed = 0.0;
+                    leader->setState(STOPPED);
+                    leader->stopTimeMs_ = nowMs();
+                }
+                break;
+            case STOPPED:
+                leader->info_.speed = 0.0;
+                if (leader->gasStationStop_ && (nowMs() - leader->stopTimeMs_ > 3000)) {
+                     std::cout << "[LEADER] Energy restored. Resuming.\n";
+                     leader->gasStationStop_ = false;
+                     leader->setState(STARTING);
+                }
+                break;
+            case STARTING:
+                leader->info_.speed = std::min(target, leader->info_.speed + accel * dt);
+                if (leader->info_.speed >= target - 1e-6) {
+                    leader->setState(NORMAL);
+                }
+                break;
+            case LOW_ENERGY:
+                 target = leader->targetSpeed_;
+                 if (leader->info_.speed > target) {
+                    leader->info_.speed = std::max(target, leader->info_.speed - decel * dt);
+                } else if (leader->info_.speed < target) {
+                    leader->info_.speed = std::min(target, leader->info_.speed + accel * dt);
+                }
+                break;
+            default: break;
+        }
+
+        leader->info_.position += leader->info_.speed * dt;
+        
+        pthread_mutex_lock(&leader->leaderMutex_);
+        for (auto& v : leader->platoonState_.vehicles) {
+            if (v.id == leader->info_.id) {
+                v.position = leader->info_.position;
+                v.speed = leader->info_.speed;
+                v.mode = LeaderMode; // Ensure mode is correct
+                break;
+            }
+        }
+        pthread_mutex_unlock(&leader->leaderMutex_);
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(TIMESTEP_MS));
+    }
+    return nullptr;
+}
+
+
+// Leader display thread
+void* FollowingVehicle::leaderDisplayThreadEntry(void* arg) {
+    FollowingVehicle* leader = static_cast<FollowingVehicle*>(arg);
+    
+    while (leader->leaderRunning_) {
+        pthread_mutex_lock(&leader->leaderMutex_);
+         std::string stateStr;
+        switch (leader->getState()) {
+            case NORMAL: stateStr = "NORMAL"; break;
+            case STOPPING: stateStr = "STOPPING"; break;
+            case STOPPED: stateStr = "STOPPED"; break;
+            case STARTING: stateStr = "STARTING"; break;
+            case LOW_ENERGY: stateStr = "LOW_ENERGY"; break;
+            default: stateStr = "UNKNOWN"; break;
+        }
+        
+        std::cout << "\033[2J\033[H"; // Clear screen
+        std::cout << "\n\033[1;36m================== PROMOTED LEADER (ID=" << leader->info_.id << ") ==================\033[0m\n";
+        std::cout << "Position: " << leader->info_.position
+                  << "  Speed: " << leader->info_.speed 
+                  << "  State: " << stateStr << "\n";
+        std::cout << "Platoon vehicles:\n";
+        
+        auto vehicles = leader->platoonState_.vehicles;
+        std::sort(vehicles.begin(), vehicles.end(), [](const VehicleInfo& a, const VehicleInfo& b){
+            return a.position > b.position;
+        });
+        
+        for (const auto& v : vehicles) {
+            std::cout << "  Vehicle ID: " << v.id
+                      << ", Pos: " << v.position
+                      << ", Spd: " << v.speed
+                      << ", Mode: " << (v.mode == LeaderMode ? "Leader" : "Follower") << "\n";
+        }
+        std::cout << std::flush;
+        pthread_mutex_unlock(&leader->leaderMutex_);
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    }
+    return nullptr;
+}
+
+// Leader status thread
+void* FollowingVehicle::leaderStatusThreadEntry(void* arg) {
+    FollowingVehicle* leader = static_cast<FollowingVehicle*>(arg);
+    while (leader->leaderRunning_) {
+        StatusUpdateMessage status{};
+        status.type = MessageType::STATUS_UPDATE;
+        status.info = leader->info_;
+        status.timestamp = nowMs();
+
+        pthread_mutex_lock(&leader->leaderMutex_);
+        for (const auto& v : leader->platoonState_.vehicles) {
+            if (v.id == leader->info_.id) continue;
+            if (v.ipAddress == 0 || v.port == 0) continue;
+            
+            struct sockaddr_in dest{};
+            dest.sin_family = AF_INET;
+            dest.sin_addr.s_addr = v.ipAddress;
+            dest.sin_port = v.port;
+            sendto(leader->clientSocket_, &status, sizeof(status), 0,
+                   (const struct sockaddr*)&dest, sizeof(dest));
+        }
+        pthread_mutex_unlock(&leader->leaderMutex_);
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return nullptr;
+}
+
+// Leader heartbeat thread
+void* FollowingVehicle::leaderHeartbeatThreadEntry(void* arg) {
+    FollowingVehicle* leader = static_cast<FollowingVehicle*>(arg);
+    const int TIMEOUT_MS = 5000;
+    
+    while (leader->leaderRunning_) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        std::int64_t now = nowMs();
+        std::vector<int> toRemove;
+        
+        pthread_mutex_lock(&leader->leaderMutex_);
+        for (auto it = leader->platoonState_.vehicles.begin(); it != leader->platoonState_.vehicles.end(); ) {
+            if (it->id == leader->info_.id) { ++it; continue; }
+            
+            std::int64_t age = (it->lastHeartbeatMs == 0) ? (TIMEOUT_MS + 1) : (now - it->lastHeartbeatMs);
+            if (age > TIMEOUT_MS) {
+                std::cerr << "[LEADER] Follower " << it->id << " TIMED OUT (Age: " << age << "ms). Removing.\n";
+                toRemove.push_back(it->id);
+                
+                RemoveVehicleMessage removeMsg{};
+                removeMsg.type = MessageType::REMOVE_VEHICLE;
+                removeMsg.vehicleId = it->id;
+                removeMsg.timestamp = nowMs();
+                
+                struct sockaddr_in dest{};
+                dest.sin_family = AF_INET;
+                dest.sin_addr.s_addr = it->ipAddress;
+                dest.sin_port = it->port;
+                sendto(leader->clientSocket_, &removeMsg, sizeof(removeMsg), 0,
+                       (const struct sockaddr*)&dest, sizeof(dest));
+                       
+                it = leader->platoonState_.vehicles.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        pthread_mutex_unlock(&leader->leaderMutex_);
+        
+        if (!toRemove.empty()) {
+            leader->sendPlatoonStateAsLeader();
+        }
+    }
+    return nullptr;
+}
+
+// Leader event sender thread (handles traffic light events)
+void* FollowingVehicle::leaderEventSenderThreadEntry(void* arg) {
+    FollowingVehicle* leader = static_cast<FollowingVehicle*>(arg);
+    while (leader->leaderRunning_) {
+        pthread_mutex_lock(&leader->eventMutex_);
+        while (leader->eventQueue_.empty() && leader->leaderRunning_) {
+            pthread_cond_wait(&leader->eventCv_, &leader->eventMutex_);
+        }
+        if (!leader->leaderRunning_) {
+            pthread_mutex_unlock(&leader->eventMutex_);
+            break;
+        }
+        int eventCode = leader->eventQueue_.front();
+        leader->eventQueue_.pop();
+        pthread_mutex_unlock(&leader->eventMutex_);
+        
+        // Handle Leader Event Codes (1-7)
+        EventMessage eventMsg{};
+        eventMsg.timestamp = nowMs();
+        bool broadcast = false;
+        
+        switch (eventCode) {
+            case 1: // Obstacle
+                leader->force_obstacle_ = !leader->force_obstacle_;
+                eventMsg.type = MessageType::OBSTACLE_DETECTED_ALERT;
+                eventMsg.eventData = (void*)(uintptr_t)leader->force_obstacle_; 
+                broadcast = true;
+                break;
+            case 2: // Red
+                eventMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
+                eventMsg.eventData = (void*)(uintptr_t)LIGHT_RED;
+                leader->setState(STOPPING);
+                broadcast = true;
+                break;
+            case 3: // Green
+                eventMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
+                eventMsg.eventData = (void*)(uintptr_t)LIGHT_GREEN;
+                leader->setState(STARTING);
+                broadcast = true;
+                break;
+            case 4: // Normal
+                leader->setState(NORMAL);
+                leader->targetSpeed_ = leader->originalSpeed_;
+                break;
+            case 5: // Low energy
+                leader->targetSpeed_ = leader->originalSpeed_ * 0.6;
+                leader->setState(LOW_ENERGY);
+                break;
+             case 6: // Restore energy
+                leader->gasStationStop_ = true;
+                leader->setState(STOPPING);
+                eventMsg.type = MessageType::GAS_STATION_ALERT;
+                broadcast = true;
+                break;
+             case 7: { // LEAVE
+                std::cout << "[LEADER] Leaving Platoon...\n";
+                 pthread_mutex_lock(&leader->leaderMutex_);
+                 auto vehicles = leader->platoonState_.vehicles;
+                 std::sort(vehicles.begin(), vehicles.end(), [](const VehicleInfo& a, const VehicleInfo& b){
+                     return a.position > b.position;
+                 });
+                 int myIndex = -1;
+                 for(int i=0; i<(int)vehicles.size(); ++i) { if(vehicles[i].id == leader->info_.id) { myIndex=i; break; } }
+                 
+                 if (myIndex != -1 && (myIndex + 1) < (int)vehicles.size()) {
+                     VehicleInfo rear = vehicles[myIndex+1];
+                     LeavePlatoonMessage leaveMsg{};
+                     leaveMsg.type = MessageType::LEAVE_PLATOON;
+                     leaveMsg.vehicleId = leader->info_.id;
+                     leaveMsg.timestamp = nowMs();
+                     
+                    struct sockaddr_in dest{};
+                    dest.sin_family = AF_INET;
+                    dest.sin_addr.s_addr = rear.ipAddress;
+                    dest.sin_port = rear.port;
+                    sendto(leader->clientSocket_, &leaveMsg, sizeof(leaveMsg), 0,
+                           (const struct sockaddr*)&dest, sizeof(dest));
+                    
+                    std::cout << "[LEADER] Sent LEAVE command to next leader " << rear.id << "\n";
+                 }
+                 pthread_mutex_unlock(&leader->leaderMutex_);
+                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                 leader->leaderRunning_ = false; 
+                 // We don't exit process, just stop threads. Ideally we should clean up but this matches basic request.
+                 break;
+             }
+            default: break;
+        }
+        
+        if (broadcast && leader->leaderRunning_) {
+            pthread_mutex_lock(&leader->leaderMutex_);
+            auto vehicles = leader->platoonState_.vehicles;
+             std::sort(vehicles.begin(), vehicles.end(), [](const VehicleInfo& a, const VehicleInfo& b){
+                 return a.position > b.position;
+             });
+             int myIndex = -1;
+             for(int i=0; i<(int)vehicles.size(); ++i) { if(vehicles[i].id == leader->info_.id) { myIndex=i; break; } }
+             
+             if (myIndex != -1 && (myIndex + 1) < (int)vehicles.size()) {
+                  VehicleInfo rear = vehicles[myIndex+1];
+                  struct sockaddr_in dest{};
+                    dest.sin_family = AF_INET;
+                    dest.sin_addr.s_addr = rear.ipAddress;
+                    dest.sin_port = rear.port;
+                    
+                    if (eventMsg.type == MessageType::TRAFFIC_LIGHT_ALERT) {
+                        TrafficLightMessage msg{};
+                        msg.type = MessageType::TRAFFIC_LIGHT_ALERT;
+                        msg.status = (TrafficLightStatus)(uintptr_t)eventMsg.eventData; 
+                        sendto(leader->clientSocket_, &msg, sizeof(msg), 0, (struct sockaddr*)&dest, sizeof(dest));
+                    } else if (eventMsg.type == MessageType::OBSTACLE_DETECTED_ALERT) {
+                        ObstacleMessage msg{};
+                        msg.type = MessageType::OBSTACLE_DETECTED_ALERT;
+                        msg.obstacleDetected = (bool)(uintptr_t)eventMsg.eventData;
+                        sendto(leader->clientSocket_, &msg, sizeof(msg), 0, (struct sockaddr*)&dest, sizeof(dest));
+                    } else if (eventMsg.type == MessageType::GAS_STATION_ALERT) {
+                         GasStationMessage msg{};
+                         msg.type = MessageType::GAS_STATION_ALERT;
+                         msg.vehicleId = leader->info_.id;
+                         sendto(leader->clientSocket_, &msg, sizeof(msg), 0, (struct sockaddr*)&dest, sizeof(dest));
+                    }
+             }
+             pthread_mutex_unlock(&leader->leaderMutex_);
+        }
+    }
+    return nullptr;
+}
