@@ -124,6 +124,12 @@ private:
     static void* leaderStatusThreadEntry(void* arg);
     static void* leaderHeartbeatThreadEntry(void* arg);
     static void* leaderEventSenderThreadEntry(void* arg);
+
+    // Additional leader state
+    double originalSpeed_{0.0};
+    bool gasStationStop_{false};
+    std::int64_t stopTimeMs_{0};
+    bool force_obstacle_{false}; // For simulated leader behavior
 };
 
 #endif // FOLLOW_H

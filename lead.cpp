@@ -770,6 +770,33 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
 
         // Send event message only to the vehicle directly behind leader (index 1 in sorted list)
         pthread_mutex_lock(&leader->mutex_);
+        
+        // Handle self-exit even if no followers
+        if (eventMsg.type == MessageType::LEAVE_PLATOON) {
+             if (leader->platoonState_.vehicles.size() > 1) {
+                 const VehicleInfo& rear = leader->platoonState_.vehicles[1];
+                 if (rear.ipAddress != 0 && rear.port != 0) {
+                      struct sockaddr_in dest{};
+                        dest.sin_family = AF_INET;
+                        dest.sin_addr.s_addr = rear.ipAddress;
+                        dest.sin_port = rear.port;
+                         LeavePlatoonMessage leaveMsg{};
+                        leaveMsg.type = MessageType::LEAVE_PLATOON;
+                        leaveMsg.vehicleId = leader->info_.id;
+                        leaveMsg.timestamp = eventMsg.timestamp;
+                        sendto(leader->serverSocket_, &leaveMsg, sizeof(leaveMsg), 0,
+                                           (const struct sockaddr*)&dest, sizeof(dest));
+                        std::cout << "[SYSTEM] Notified vehicle " << rear.id << " to become new leader.\n";
+                 }
+             }
+             std::cout << "[SYSTEM] Stopping leader server...\n";
+             leader->serverRunning_ = false;
+             pthread_cond_broadcast(&leader->eventCv_);
+             ::shutdown(leader->serverSocket_, SHUT_RDWR);
+             ::close(leader->serverSocket_);
+             exit(0);
+        }
+
         if (leader->platoonState_.vehicles.size() > 1) {
             const VehicleInfo& rear = leader->platoonState_.vehicles[1]; // index 0 is leader, index 1 is rear
             if (rear.ipAddress != 0 && rear.port != 0) {
@@ -842,6 +869,9 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
                         leader->serverSocket_ = -1;
                         
                         std::cout << "[SYSTEM] Leader departure complete.\n";
+                        
+                        // Force exit to ensure socket is released and process stops
+                        exit(0);
                         break;
                     }
                     default:
@@ -858,6 +888,7 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
                         std::cout << "[SYSTEM] Stopping leader server...\n";
                         leader->serverRunning_ = false;
                         pthread_cond_broadcast(&leader->eventCv_);
+                        exit(0); // Ensure exit here too if fall through
                         break;
                     }
 
