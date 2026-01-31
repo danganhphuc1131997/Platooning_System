@@ -1,100 +1,78 @@
-# Platooning System (Updated)
+# Platooning System Project
 
-This updated version aligns with the professor’s requirements we discussed:
+A simulation of a vehicle platoon system handling leader election, vehicle following logic (PID), and collision avoidance (AEB using OpenCL).
 
-## What was fixed/added
-- ✅ **pthreads + mutex** for parallel execution (no OpenMP for `send/recv`)
-- ✅ **UDP communication** (connectionless, using `sendto/recvfrom`)
-- ✅ **Safe messages** (fixed-size `WireMessage`, no `std::vector` in `send()`)
-- ✅ **Node failure detection** via **heartbeat + timeout**
-- ✅ **Your use case**: **cut-in / temporary communication loss** (`c`) → leader enters **degraded mode** (slows down slightly) → then recovers
-- ✅ **Logical matrix clock pattern** (fixed `MAX_NODES` matrix, merged on receive)
+## Prerequisites
 
-## Build (WSL / Linux)
+This project relies on standard C++ libraries, POSIX Threads (pthread), and OpenCL for the AEB system.
 
-### Quick Build with Makefile (Recommended)
+### Install Dependencies (Ubuntu/WSL)
+
 ```bash
+sudo apt update
+sudo apt install build-essential ocl-icd-opencl-dev opencl-headers clinfo
+```
+
+To verify OpenCL installation:
+```bash
+clinfo
+```
+
+## Build
+
+The project uses a `Makefile` for compilation.
+
+```bash
+# Clean and Build all components
+make clean
 make
 ```
-This builds all programs: `lead`, `follow`, `leader_input`, and `follower_input`
 
-### Manual Build
+This will generate executables in the `output/` directory:
+- `output/lead`: The Leader vehicle process.
+- `output/follow`: The Follower vehicle process.
+- `output/leader_input`: Input simulator for Leader events (e.g., Leave Platoon).
+- `output/follower_input`: (Legacy) Input simulator for Follower events.
+
+## Usage
+
+### 1. Manual Run (Multi-Terminal)
+
+You generally need multiple terminals to run the system interactively.
+
+**Terminal 1: Leader**
 ```bash
-g++ -std=c++17 lead.cpp -o lead -pthread
-g++ -std=c++17 follow.cpp -o follow -pthread
-g++ -std=c++17 leader_input.cpp -o leader_input -pthread
-g++ -std=c++17 follower_input.cpp -o follower_input -pthread
+./output/lead
 ```
 
-## Run in WSL / Linux
-
-### ⭐ NEW: WSL-Compatible Multi-Terminal Setup
-
-**The old approach (auto-spawning GUI terminals) doesn't work in WSL.** Use one of these methods:
-
-#### Option 1: Multiple Terminal Windows (Manual)
-Open 4 separate WSL terminal windows:
-
-**Terminal 1 - Leader Vehicle:**
+**Terminal 2+: Followers**
+Start followers with a specific ID.
 ```bash
-./lead
+# Follower with ID 2
+./output/follow 2
+
+# Follower with ID 3
+./output/follow 3
 ```
 
-**Terminal 2 - Follower Vehicle:**
+**Terminal 3: Controller**
+Send commands to the leader (e.g., speed up, slow down, leave platoon).
 ```bash
-./follow 2
+./output/leader_input
 ```
 
-**Terminal 3 - Leader Event Input:**
+### 2. Automated Test
+
+A specialized script is available to test the "Leader Leave & Promote" scenario. This script sets up a topology (L1 -> F2 -> F3), triggers the Leader (L1) to leave, and verifies that F2 takes over as the new Leader.
+
 ```bash
-./leader_input
+chmod +x test_3_vehicles_leader_leave_join.sh
+./test_3_vehicles_leader_leave_join.sh
 ```
 
-**Terminal 4 - Follower Event Input:**
-```bash
-./follower_input 2
-```
+## Key Features
 
-#### Option 2: Using tmux (Recommended)
-```bash
-./start_tmux.sh
-```
-This automatically sets up 4 panes in tmux. Then run:
-- Pane 1 (top-left): `./lead`
-- Pane 2 (top-right): `./follow 2`
-- Pane 3 (bottom-left): `./leader_input`
-- Pane 4 (bottom-right): `./follower_input 2`
-
-See [WSL_GUIDE.md](WSL_GUIDE.md) for detailed instructions!
-
----
-
-### Running Additional Followers
-You can start more followers:
-```bash
-./follow 3
-./follow 4
-```
-
-And their corresponding input programs:
-```bash
-./follower_input 3
-./follower_input 4
-```
-
-## Event Controls
-
-### Leader Events (via leader_input):
-- `1` = Obstacle detected (leader stops)
-- `2` = Traffic light RED
-- `3` = Traffic light GREEN
-- `4` = Cut-in vehicle alert
-- `0` = Exit
-
-### Follower Events (via follower_input):
-- `1` = Traffic light RED (follower stops)
-- `2` = Traffic light GREEN (follower resumes)
-- `0` = Exit
-
-## Node failure demo
-While followers are running, kill one follower terminal with `Ctrl+C` (crash). Leader will remove it after the timeout.
+- **Leader Election**: Dynamic promotion of the first follower to leader if the original leader departs.
+- **OpenCL AEB**: Parallel processing (GPU/CPU) for calculating Autonomous Emergency Braking risk using ray-casting simulation.
+- **UDP Networking**: Vehicles communicate via UDP sockets (Port 5000 is reserved for the Leader).
+- **PID Control**: Followers use PID controllers to maintain safe distance and speed matching.

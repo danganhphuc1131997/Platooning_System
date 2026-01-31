@@ -762,8 +762,8 @@ void* FollowingVehicle::displayThreadEntry(void* arg) {
             case LOW_ENERGY: stateStr = "LOW_ENERGY"; break;
             default: stateStr = "UNKNOWN"; break;
         }
-        // std::cout << "\033[2J\033[H"; // clear screen + home
-        std::cout << "============ FOLLOWER " << follower->info_.id << " ============\n";
+        std::cout << "\033[2J\033[H"; // clear screen + home
+        std::cout << "\n================== FOLLOWER " << follower->info_.id << " ==================\n";
         std::cout << "Position: " << follower->info_.position
                   << "  Speed: " << follower->info_.speed
                   << "  State: " << stateStr << "\n";
