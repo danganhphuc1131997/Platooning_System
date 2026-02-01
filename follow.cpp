@@ -14,16 +14,29 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+using FS = FollowerState;
+
 // ANSI colors for terminal output
 static const char* COLOR_RED="[31m";
 static const char* COLOR_RESET="[0m";
+
+#include <stdexcept>
 
 // Constructor
 FollowingVehicle::FollowingVehicle(int id,
                                  double initialSpeed,
                                  double initialPosition)
-    : state_(NORMAL), clientRunning_(false), energyAlertSent_(false), clientSocket_(-1),
+    : state_(FS::NORMAL), clientRunning_(false), energyAlertSent_(false), clientSocket_(-1),
       isLeader_(false), leaderRunning_(false) {
+    if (id <= 0) {
+        throw std::invalid_argument("ID must be positive");
+    }
+    if (initialSpeed < 0) {
+        throw std::invalid_argument("Speed must be non-negative");
+    }
+    if (initialPosition < 0) {
+        throw std::invalid_argument("Position must be non-negative");
+    }
     info_.id = id;
     info_.position = initialPosition;
     info_.speed = std::round(initialSpeed);
@@ -207,7 +220,7 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
 
                     // Process the alert (delay + decoupled logic)
                     if (alert == LIGHT_RED) {
-                        follower->setState(STOPPING_FOR_RED_LIGHT);
+                        follower->setState(FS::STOPPING_FOR_RED_LIGHT);
                     } else if (alert == LIGHT_GREEN) {
                         bool isDecoupled = false;
                         bool hasDelay = false;
@@ -223,12 +236,12 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                         pthread_mutex_unlock(&follower->leaderMutex_);
 
                         if (isDecoupled) {
-                            follower->setState(DECOUPLED);
+                            follower->setState(FS::DECOUPLED);
                         } else if (hasDelay && delaySec > 0) {
                             // Stay stopped until delayedUntilMs_ expires (handled in run loop)
-                            follower->setState(STOPPED);
+                            follower->setState(FS::STOPPED);
                         } else {
-                            follower->setState(STARTING);
+                            follower->setState(FS::STARTING);
                         }
                     }
 
@@ -347,10 +360,10 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                               << (detected ? "DETECTED" : "CLEARED") << std::endl;
 
                     if (detected) {
-                        follower->setState(STOPPING_FOR_OBSTACLE);
+                        follower->setState(FS::STOPPING_FOR_OBSTACLE);
                     } else {
-                        if (follower->getState() == STOPPED || follower->getState() == STOPPING_FOR_OBSTACLE) {
-                            follower->setState(NORMAL);
+                        if (follower->getState() == FS::STOPPED || follower->getState() == FS::STOPPING_FOR_OBSTACLE) {
+                            follower->setState(FS::NORMAL);
                         }
                     }
                     // Process obstacle detection (for now just log)
@@ -372,9 +385,9 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                 case REMOVE_VEHICLE: {
                     if (static_cast<size_t>(recvLen) < sizeof(RemoveVehicleMessage)) break;
                     // Pause 5 seconds before attempting to rejoin
-                    follower->setState(STOPPED);
+                    follower->setState(FS::STOPPED);
                     std::this_thread::sleep_for(std::chrono::seconds(5));
-                    follower->setState(NORMAL);
+                    follower->setState(FS::NORMAL);
                     RemoveVehicleMessage removeMsg;
                     std::memcpy(&removeMsg, buffer, sizeof(removeMsg));
                     if (removeMsg.vehicleId == follower->info_.id) {
@@ -388,10 +401,10 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                         follower->rearVehicleInfo_.id = -1;
                         follower->platoonState_.vehicles.clear();
                         follower->trafficLight_ = LIGHT_GREEN;
-                        // Ensure we are not marked decoupled so run loop treats us as NORMAL
+                        // Ensure we are not marked decoupled so run loop treats us as FS::NORMAL
                         follower->decoupled_ = false;
                         follower->delayedUntilMs_ = 0;
-                        follower->setState(NORMAL);
+                        follower->setState(FS::NORMAL);
                         pthread_mutex_unlock(&follower->leaderMutex_);
 
                         // Ensure we resume sending status so leader updates heartbeat timestamp
@@ -552,12 +565,12 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
         const std::int64_t now = nowMs();
         if (!isDecoupled && light == LIGHT_GREEN && delayedUntil > now) {
             follower->info_.speed = 0.0;
-            follower->setState(STOPPED);
-        } else if (!isDecoupled && light == LIGHT_GREEN && delayedUntil != 0 && delayedUntil <= now && follower->getState() == STOPPED) {
+            follower->setState(FS::STOPPED);
+        } else if (!isDecoupled && light == LIGHT_GREEN && delayedUntil != 0 && delayedUntil <= now && follower->getState() == FS::STOPPED) {
             pthread_mutex_lock(&follower->leaderMutex_);
             follower->delayedUntilMs_ = 0;
             pthread_mutex_unlock(&follower->leaderMutex_);
-            follower->setState(STARTING);
+            follower->setState(FS::STARTING);
         }
 
         // Detect "left-behind" on GREEN when leader is moving and this follower is still stopped
@@ -572,7 +585,7 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
                 pthread_mutex_unlock(&follower->leaderMutex_);
 
                 follower->sendCoupleCommandToLeader(false); // temporarily leave platoon
-                follower->setState(DECOUPLED);
+                follower->setState(FS::DECOUPLED);
                 isDecoupled = true;
             }
         }
@@ -581,27 +594,27 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
         FollowerState currentState = follower->getState();
         switch (currentState)
         {
-            case NORMAL: 
+            case FS::NORMAL: 
                 if (gap < SAFE_DISTANCE) {
-                    follower->setState(STOPPING);
+                    follower->setState(FS::STOPPING);
                 } else if (gap > (SAFE_DISTANCE + 20.0)) {
-                    follower->setState(CATCHING_UP);
+                    follower->setState(FS::CATCHING_UP);
                 } else {
                     // Maintain speed - match the vehicle in front
                     follower->info_.speed = refSp;
                 }
                 break;
-            case ERROR: 
+            case FS::ERROR: 
                 break;
-            case STARTING:
+            case FS::STARTING:
                 follower->info_.speed = std::round(std::min(targetSpeed, follower->info_.speed + accel * dt));
                 if (follower->info_.speed >= targetSpeed - 1e-6) {
-                    follower->setState(NORMAL);
+                    follower->setState(FS::NORMAL);
                 }
                 break;
-            case CATCHING_UP:
+            case FS::CATCHING_UP:
                 if ((gap >= SAFE_DISTANCE) && (gap <= (SAFE_DISTANCE + 20.0))) {
-                    follower->setState(NORMAL);
+                    follower->setState(FS::NORMAL);
                 } else if (gap > (SAFE_DISTANCE + 100.0)) {
                     // Far behind - speed up aggressively
                     follower->info_.speed = std::round(std::min(refSp + 30.0, follower->info_.speed + accel * dt));
@@ -610,31 +623,31 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
                     follower->info_.speed = std::round(std::min(refSp + 5.0, follower->info_.speed + accel * dt));
                 }
                 break;
-            case STOPPING:
+            case FS::STOPPING:
                 if (gap >= (SAFE_DISTANCE + 5.0)) {
-                    follower->setState(NORMAL);
+                    follower->setState(FS::NORMAL);
                 } else if (follower->info_.speed > 0.0) {
                     follower->info_.speed = std::round(std::max(0.0, follower->info_.speed - decel * dt));
                     if (follower->info_.speed <= 0.001) {
                         follower->info_.speed = 0.0;
-                        // follower->setState(STOPPED);
+                        // follower->setState(FS::STOPPED);
                     }
                 }
                 break;
-            case STOPPING_FOR_RED_LIGHT:
-            case STOPPING_FOR_OBSTACLE:
+            case FS::STOPPING_FOR_RED_LIGHT:
+            case FS::STOPPING_FOR_OBSTACLE:
                 if (follower->info_.speed > 0.0) {
                     follower->info_.speed = std::round(std::max(0.0, follower->info_.speed - decel * dt * 1.32));
                     if (follower->info_.speed <= 0.001) {
                         follower->info_.speed = 0.0;
-                        follower->setState(STOPPED);
+                        follower->setState(FS::STOPPED);
                     }
                 }
                 break;
-            case STOPPED:
+            case FS::STOPPED:
                 follower->info_.speed = 0.0;
                 break;
-            case DECOUPLED:
+            case FS::DECOUPLED:
                 // On RED, remain stopped. On GREEN, catch up to the leader until the target gap is reached.
                 if (light == LIGHT_RED) {
                     follower->info_.speed = 0.0;
@@ -648,7 +661,7 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
                     pthread_mutex_unlock(&follower->leaderMutex_);
 
                     follower->sendCoupleCommandToLeader(true);
-                    follower->setState(NORMAL);
+                    follower->setState(FS::NORMAL);
                     follower->info_.speed = refSp;
                     break;
                 }
@@ -657,12 +670,12 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
                 follower->info_.speed = std::round(std::min(leaderSp + CATCH_UP_SPEED_BONUS,
                                                            follower->info_.speed + accel * dt));
                 break;
-            case LOW_ENERGY:
+            case FS::LOW_ENERGY:
                 // Continue following but cap speed at target speed
                 if (gap < SAFE_DISTANCE) {
-                    follower->setState(STOPPING);
+                    follower->setState(FS::STOPPING);
                 } else if (gap > (SAFE_DISTANCE + 20.0)) {
-                    follower->setState(CATCHING_UP);
+                    follower->setState(FS::CATCHING_UP);
                 } else {
                     // Maintain speed - match the vehicle in front, but don't exceed target speed
                     double desiredSpeed = std::min(refSp, follower->targetSpeed_);
@@ -750,16 +763,16 @@ void* FollowingVehicle::displayThreadEntry(void* arg) {
         FollowerState state = follower->getState();
         std::string stateStr;
         switch (state) {
-            case NORMAL: stateStr = "NORMAL"; break;
-            case ERROR: stateStr = "ERROR"; break;
-            case STOPPING: stateStr = "STOPPING"; break;
-            case STOPPED: stateStr = "STOPPED"; break;
-            case STARTING: stateStr = "STARTING"; break;
-            case CATCHING_UP: stateStr = "CATCHING_UP"; break;
-            case STOPPING_FOR_RED_LIGHT: stateStr = "STOPPING_FOR_RED_LIGHT"; break;
-            case STOPPING_FOR_OBSTACLE: stateStr = "STOPPING_FOR_OBSTACLE"; break;
-            case DECOUPLED: stateStr = "DECOUPLED"; break;
-            case LOW_ENERGY: stateStr = "LOW_ENERGY"; break;
+            case FS::NORMAL: stateStr = "State::NORMAL"; break;
+            case FS::ERROR: stateStr = "State::ERROR"; break;
+            case FS::STOPPING: stateStr = "State::STOPPING"; break;
+            case FS::STOPPED: stateStr = "State::STOPPED"; break;
+            case FS::STARTING: stateStr = "State::STARTING"; break;
+            case FS::CATCHING_UP: stateStr = "State::CATCHING_UP"; break;
+            case FS::STOPPING_FOR_RED_LIGHT: stateStr = "State::STOPPING_FOR_RED_LIGHT"; break;
+            case FS::STOPPING_FOR_OBSTACLE: stateStr = "State::STOPPING_FOR_OBSTACLE"; break;
+            case FS::DECOUPLED: stateStr = "State::DECOUPLED"; break;
+            case FS::LOW_ENERGY: stateStr = "State::LOW_ENERGY"; break;
             default: stateStr = "UNKNOWN"; break;
         }
         std::cout << "\033[2J\033[H"; // clear screen + home
@@ -846,18 +859,18 @@ void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
             case 1: // Red light
                 eventMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
                 eventMsg.eventData = (void*)LIGHT_RED;
-                follower->setState(STOPPING_FOR_RED_LIGHT);
+                follower->setState(FS::STOPPING_FOR_RED_LIGHT);
                 break;
             case 2: // Green light
                 eventMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
                 eventMsg.eventData = (void*)LIGHT_GREEN;
-                follower->setState(STARTING);
+                follower->setState(FS::STARTING);
                 break;
             case 3: // Run out of energy
                 eventMsg.type = MessageType::ENERGY_DEPLETION_ALERT;
                 // Set energy to 0, reduce speed to 60%, send alert immediately
                 follower->targetSpeed_ = follower->info_.speed * 0.6;
-                follower->setState(LOW_ENERGY);
+                follower->setState(FS::LOW_ENERGY);
                 break;
             case 5: // Simulate communication lost 3 seconds
                 std::cout << "[FOLLOWER " << follower->info_.id << "] Simulating communication loss for 3 seconds...\n";
@@ -973,7 +986,11 @@ void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
     return nullptr;
 }
 
+#ifdef UNIT_TEST
+int follower_main(int argc, char* argv[]) {
+#else
 int main(int argc, char* argv[]) {
+#endif
     // Check if running in input_mode (separate terminal for event input)
     if (argc >= 3 && std::string(argv[1]) == "input_mode") {
         int followerId = std::stoi(argv[2]);
@@ -1131,7 +1148,7 @@ void FollowingVehicle::transitionToLeader() {
 
     // Set original speed to current speed or target speed
     originalSpeed_ = info_.speed;
-    setState(NORMAL); // Reset state to NORMAL
+    setState(FS::NORMAL); // Reset state to FS::NORMAL
     
     // Start leader mode
     startLeaderMode();
@@ -1365,28 +1382,28 @@ void* FollowingVehicle::leaderRecvThreadEntry(void* arg) {
                     std::memcpy(&tlMsg, buffer, sizeof(tlMsg));
                     TrafficLightStatus alert = static_cast<TrafficLightStatus>(tlMsg.status);
                      if (alert == LIGHT_RED) {
-                        leader->setState(STOPPING);
+                        leader->setState(FS::STOPPING);
                     } else if (alert == LIGHT_GREEN) {
-                        leader->setState(STARTING);
+                        leader->setState(FS::STARTING);
                     }
                     break;
                 }
                 case ENERGY_DEPLETION_ALERT: {
                     if (static_cast<size_t>(recvLen) < sizeof(EnergyDepletionMessage)) break;
                     std::cout << "[LEADER] Low energy alert. Reducing speed.\n";
-                    leader->setState(LOW_ENERGY);
+                    leader->setState(FS::LOW_ENERGY);
                     leader->targetSpeed_ = leader->originalSpeed_ * 0.6;
                     break;
                 }
                  case ENERGY_RESTORED: {
                     std::cout << "[LEADER] Energy restored. Stopping at gas station.\n";
-                    leader->setState(STOPPING);
+                    leader->setState(FS::STOPPING);
                     leader->gasStationStop_ = true;
                     break;
                 }
                 case GAS_STATION_ALERT: {
                      std::cout << "[LEADER] Gas station alert. Stopping.\n";
-                     leader->setState(STOPPING);
+                     leader->setState(FS::STOPPING);
                      leader->gasStationStop_ = false;
                      break;
                 }
@@ -1409,39 +1426,39 @@ void* FollowingVehicle::leaderRunThreadEntry(void* arg) {
     while (leader->leaderRunning_) {
         // Simple state machine for promoted leader
         FollowerState st = leader->getState();
-        double target = (st == NORMAL) ? leader->originalSpeed_ : leader->info_.speed;
+        double target = (st == FS::NORMAL) ? leader->originalSpeed_ : leader->info_.speed;
         
         switch (st) {
-             case NORMAL:
+             case FS::NORMAL:
                 if (leader->info_.speed < target) {
                     leader->info_.speed = std::min(target, leader->info_.speed + accel * dt);
                 } else if (leader->info_.speed > target) {
                     leader->info_.speed = std::max(target, leader->info_.speed - decel * dt);
                 }
                 break;
-            case STOPPING:
+            case FS::STOPPING:
                 leader->info_.speed = std::max(0.0, leader->info_.speed - decel * dt * 1.2);
                 if (leader->info_.speed <= 0.001) {
                     leader->info_.speed = 0.0;
-                    leader->setState(STOPPED);
+                    leader->setState(FS::STOPPED);
                     leader->stopTimeMs_ = nowMs();
                 }
                 break;
-            case STOPPED:
+            case FS::STOPPED:
                 leader->info_.speed = 0.0;
                 if (leader->gasStationStop_ && (nowMs() - leader->stopTimeMs_ > 3000)) {
                      std::cout << "[LEADER] Energy restored. Resuming.\n";
                      leader->gasStationStop_ = false;
-                     leader->setState(STARTING);
+                     leader->setState(FS::STARTING);
                 }
                 break;
-            case STARTING:
+            case FS::STARTING:
                 leader->info_.speed = std::min(target, leader->info_.speed + accel * dt);
                 if (leader->info_.speed >= target - 1e-6) {
-                    leader->setState(NORMAL);
+                    leader->setState(FS::NORMAL);
                 }
                 break;
-            case LOW_ENERGY:
+            case FS::LOW_ENERGY:
                  target = leader->targetSpeed_;
                  if (leader->info_.speed > target) {
                     leader->info_.speed = std::max(target, leader->info_.speed - decel * dt);
@@ -1479,11 +1496,11 @@ void* FollowingVehicle::leaderDisplayThreadEntry(void* arg) {
         pthread_mutex_lock(&leader->leaderMutex_);
          std::string stateStr;
         switch (leader->getState()) {
-            case NORMAL: stateStr = "NORMAL"; break;
-            case STOPPING: stateStr = "STOPPING"; break;
-            case STOPPED: stateStr = "STOPPED"; break;
-            case STARTING: stateStr = "STARTING"; break;
-            case LOW_ENERGY: stateStr = "LOW_ENERGY"; break;
+            case FS::NORMAL: stateStr = "State::NORMAL"; break;
+            case FS::STOPPING: stateStr = "State::STOPPING"; break;
+            case FS::STOPPED: stateStr = "State::STOPPED"; break;
+            case FS::STARTING: stateStr = "State::STARTING"; break;
+            case FS::LOW_ENERGY: stateStr = "State::LOW_ENERGY"; break;
             default: stateStr = "UNKNOWN"; break;
         }
         
@@ -1617,26 +1634,26 @@ void* FollowingVehicle::leaderEventSenderThreadEntry(void* arg) {
             case 2: // Red
                 eventMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
                 eventMsg.eventData = (void*)(uintptr_t)LIGHT_RED;
-                leader->setState(STOPPING);
+                leader->setState(FS::STOPPING);
                 broadcast = true;
                 break;
             case 3: // Green
                 eventMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
                 eventMsg.eventData = (void*)(uintptr_t)LIGHT_GREEN;
-                leader->setState(STARTING);
+                leader->setState(FS::STARTING);
                 broadcast = true;
                 break;
             case 4: // Normal
-                leader->setState(NORMAL);
+                leader->setState(FS::NORMAL);
                 leader->targetSpeed_ = leader->originalSpeed_;
                 break;
             case 5: // Low energy
                 leader->targetSpeed_ = leader->originalSpeed_ * 0.6;
-                leader->setState(LOW_ENERGY);
+                leader->setState(FS::LOW_ENERGY);
                 break;
              case 6: // Restore energy
                 leader->gasStationStop_ = true;
-                leader->setState(STOPPING);
+                leader->setState(FS::STOPPING);
                 eventMsg.type = MessageType::GAS_STATION_ALERT;
                 broadcast = true;
                 break;

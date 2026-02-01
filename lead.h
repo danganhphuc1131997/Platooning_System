@@ -25,14 +25,14 @@
 #include <vector>
 #include <algorithm>
 
-enum LeaderState : std::uint8_t {
+enum class LeaderState : std::uint8_t {
     NORMAL = 0,  // Normal driving
     ERROR,       // Error state
     STOPPING,    // Braking to stop
     STOPPED,     // Stopped
     STARTING,    // Starting from stop
     LOW_ENERGY,  // Low energy, reducing speed
-    DEGRADED   // Communication degraded mode
+    DEGRADED     // Communication degraded mode
 };
 
 class LeadingVehicle {
@@ -45,6 +45,7 @@ public:
     void startThreads(); // Start internal threads
     void setState(LeaderState newState);
     LeaderState getState() const;
+    int getId() const { return info_.id; }
 
     // For OpenCL testing purposes
     bool force_obstacle_{false};

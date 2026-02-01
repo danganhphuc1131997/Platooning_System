@@ -19,7 +19,7 @@
 #include "vehicle.h"
 #include "system_config.h"
 
-enum FollowerState : std::uint8_t {
+enum class FollowerState : std::uint8_t {
     NORMAL = 0,             // Normal following
     ERROR,                  // Error state
     STOPPING,               // Braking to stop
@@ -42,6 +42,7 @@ public:
     void startThreads(); // Start internal threads
     void setState(FollowerState newState);
     FollowerState getState() const;
+    int getId() const { return info_.id; }
 
 private:
     VehicleInfo info_;

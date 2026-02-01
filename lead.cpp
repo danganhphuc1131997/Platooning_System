@@ -13,6 +13,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <string>
+#include <stdexcept>
+
+using LS = LeaderState;
 
 // ANSI colors for terminal output
 static const char* COLOR_RED="[31m";
@@ -46,7 +49,13 @@ __kernel void check_lidar_safety(__global const float *distances,
 
 // Constructor
 LeadingVehicle::LeadingVehicle(int id, double initialPosition, double initialSpeed)
-    : state_(NORMAL), serverRunning_(false), originalSpeed_(initialSpeed), energyAlertSent_(false), stopTimeMs_(0), gasStationStop_(false) {
+    : state_(LS::NORMAL), serverRunning_(false), originalSpeed_(initialSpeed), energyAlertSent_(false), stopTimeMs_(0), gasStationStop_(false) {
+    if (id <= 0) {
+        throw std::invalid_argument("ID must be positive");
+    }
+    if (initialSpeed < 0) {
+        throw std::invalid_argument("Speed must be non-negative");
+    }
     info_.id = id;
     info_.position = initialPosition;
     info_.speed = initialSpeed;
@@ -92,8 +101,15 @@ void LeadingVehicle::stopServer() {
 
 // Set leader state
 void LeadingVehicle::setState(LeaderState newState) {
+    // Basic validation of enum range (if it was cast from bad int)
+    int stateVal = static_cast<int>(newState);
+    if (stateVal < 0 || stateVal > static_cast<int>(LS::DEGRADED)) {
+        std::cerr << "[WARNING] Attempt to set invalid LeaderState: " << stateVal << ". Ignoring.\n";
+        return;
+    }
+
     state_ = newState;
-    if (newState == STOPPED) {
+    if (newState == LS::STOPPED) {
         stopTimeMs_ = nowMs();
     }
 }
@@ -321,9 +337,9 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                               << (alert == LIGHT_RED ? "RED" : "GREEN") << std::endl;
                     // For leader, we just log it. Further processing can be added here.
                     if (alert == LIGHT_RED) {
-                        leader->setState(STOPPING);
+                        leader->setState(LS::STOPPING);
                     } else if (alert == LIGHT_GREEN) {
-                        leader->setState(STARTING);
+                        leader->setState(LS::STARTING);
                     }
                     break;
                 }
@@ -337,7 +353,7 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                     std::cout << "Received energy low alert from vehicle " << energyMsg.vehicleId << std::endl;
 
                     // Gradually reduce leader's speed by 40% to allow followers to conserve energy
-                    leader->setState(LOW_ENERGY);
+                    leader->setState(LS::LOW_ENERGY);
                     leader->targetSpeed_ = leader->originalSpeed_ * 0.6;
                     std::cout << "Leader will gradually reduce speed to " << leader->targetSpeed_ << " m/s due to low energy alert\n";
 
@@ -354,7 +370,7 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                     std::cout << "Received energy restored from vehicle " << erMsg.vehicleId << std::endl;
 
                     // Stop at gas station
-                    leader->setState(STOPPING);
+                    leader->setState(LS::STOPPING);
                     std::cout << "Leader stopping at gas station\n";
                     break;
                 }
@@ -368,7 +384,7 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                     std::cout << "Received gas station alert from vehicle " << gsMsg.vehicleId << std::endl;
 
                     // Stop at gas station
-                    leader->setState(STOPPING);
+                    leader->setState(LS::STOPPING);
                     std::cout << "Leader stopping at gas station\n";
                     break;
                 }
@@ -406,8 +422,8 @@ void* LeadingVehicle::eventSimulationThreadEntry(void* arg) {
                     obsMsg.obstacleDetected = leader->force_obstacle_;
                     obsMsg.timestamp = nowMs();
 
-                    if (!leader->force_obstacle_ && leader->getState() == STOPPED) {
-                        leader->setState(NORMAL); 
+                    if (!leader->force_obstacle_ && leader->getState() == LS::STOPPED) {
+                        leader->setState(LS::NORMAL); 
                     }
                     // send event to followers
                     EventMessage eventMsg{};
@@ -436,13 +452,13 @@ void* LeadingVehicle::eventSimulationThreadEntry(void* arg) {
                     pthread_mutex_unlock(&leader->eventMutex_);
 
                     // change leader state
-                    leader->setState(STOPPING);
+                    leader->setState(LS::STOPPING);
                     break;
                 }
                 
                 case 3: { 
                     // Green Light
-                    leader->setState(STARTING);
+                    leader->setState(LS::STARTING);
 
                     // send event to followers
                     EventMessage eventMsg{};
@@ -459,21 +475,21 @@ void* LeadingVehicle::eventSimulationThreadEntry(void* arg) {
                 }
                 case 4: {
                     // Return to normal speed
-                    leader->setState(NORMAL);
+                    leader->setState(LS::NORMAL);
                     leader->targetSpeed_ = leader->originalSpeed_;
                     break;
                 }
                 case 5: {
                     // Run out of energy
                     leader->targetSpeed_ = leader->info_.speed * 0.6;
-                    leader->setState(LOW_ENERGY);
+                    leader->setState(LS::LOW_ENERGY);
                     leader->energyAlertSent_ = false; // Allow sending alert in status thread
                     break;
                 }
                 case 6: {
                     // Restore energy
                     leader->gasStationStop_ = true; // Mark as gas station stop
-                    leader->setState(STOPPING); // Stop at gas station
+                    leader->setState(LS::STOPPING); // Stop at gas station
                     // Send gas station alert to followers
                     EventMessage eventMsg{};
                     eventMsg.type = MessageType::GAS_STATION_ALERT;
@@ -532,13 +548,13 @@ void* LeadingVehicle::displayThreadEntry(void* arg) {
         LeaderState state = leader->getState();
         std::string stateStr;
         switch (state) {
-            case NORMAL: stateStr = "NORMAL"; break;
-            case ERROR: stateStr = "ERROR"; break;
-            case STOPPING: stateStr = "STOPPING"; break;
-            case STOPPED: stateStr = "STOPPED"; break;
-            case STARTING: stateStr = "STARTING"; break;
-            case LOW_ENERGY: stateStr = "LOW_ENERGY"; break;
-            case DEGRADED: stateStr = "DEGRADED"; break;
+            case LS::NORMAL: stateStr = "LS::NORMAL"; break;
+            case LS::ERROR: stateStr = "LS::ERROR"; break;
+            case LS::STOPPING: stateStr = "LS::STOPPING"; break;
+            case LS::STOPPED: stateStr = "LS::STOPPED"; break;
+            case LS::STARTING: stateStr = "LS::STARTING"; break;
+            case LS::LOW_ENERGY: stateStr = "LS::LOW_ENERGY"; break;
+            case LS::DEGRADED: stateStr = "LS::DEGRADED"; break;
             default: stateStr = "UNKNOWN"; break;
         }
         // Clear and print header + platoon list
@@ -576,46 +592,46 @@ void* LeadingVehicle::runThreadEntry(void* arg) {
         // Scan environment for obstacles
         bool obstacleDetected = leader->scanEnvironmentWithGPU();
         if (obstacleDetected) {
-            if (leader->getState() != STOPPED && leader->getState() != STOPPING) {
+            if (leader->getState() != LS::STOPPED && leader->getState() != LS::STOPPING) {
                 std::cout << "\033[1;31m[AEB ACTIVATED] Obstacle detected by OpenCL! Emergency Braking!\033[0m\n";
-                leader->setState(STOPPING);
+                leader->setState(LS::STOPPING);
             }
         }
         // End OpenCL Lidar processing******************************************************************************
 
         // Update kinematics according to the leader state machine
         LeaderState st = leader->getState();
-        double targetSpeed = (st == NORMAL) ? leader->originalSpeed_ : leader->info_.speed;
+        double targetSpeed = (st == LS::NORMAL) ? leader->originalSpeed_ : leader->info_.speed;
         switch (st) {
-            case NORMAL:
+            case LS::NORMAL:
                 if (leader->info_.speed < targetSpeed) {
                     leader->info_.speed = std::min(targetSpeed, leader->info_.speed + accel * dt);
                 } else if (leader->info_.speed > targetSpeed) {
                     leader->info_.speed = std::max(targetSpeed, leader->info_.speed - decel * dt);
                 }
                 break;
-            case STOPPING:
+            case LS::STOPPING:
                 leader->info_.speed = std::max(0.0, leader->info_.speed - decel * dt * 1.2); // slightly more aggressive decel
                 if (leader->info_.speed <= 0.001) {
                     leader->info_.speed = 0.0;
-                    leader->setState(STOPPED);
+                    leader->setState(LS::STOPPED);
                 }
                 break;
-            case STOPPED:
+            case LS::STOPPED:
                 leader->info_.speed = 0.0;
                 if (leader->gasStationStop_ && leader->nowMs() - leader->stopTimeMs_ > 3000) { // 3 seconds for gas station
                     std::cout << "Energy restored.\n";
                     leader->gasStationStop_ = false; // Reset flag
-                    leader->setState(STARTING);
+                    leader->setState(LS::STARTING);
                 }
                 break;
-            case STARTING:
+            case LS::STARTING:
                 leader->info_.speed = std::min(targetSpeed, leader->info_.speed + accel * dt);
                 if (leader->info_.speed >= targetSpeed - 1e-6) {
-                    leader->setState(NORMAL);
+                    leader->setState(LS::NORMAL);
                 }
                 break;
-            case LOW_ENERGY:
+            case LS::LOW_ENERGY:
                 targetSpeed = leader->targetSpeed_;
                 if (leader->info_.speed > targetSpeed) {
                     leader->info_.speed = std::max(targetSpeed, leader->info_.speed - decel * dt);
@@ -623,7 +639,7 @@ void* LeadingVehicle::runThreadEntry(void* arg) {
                     leader->info_.speed = std::min(targetSpeed, leader->info_.speed + accel * dt);
                 }
                 break;
-            case DEGRADED:
+            case LS::DEGRADED:
                 // Lower speed to 48 m/s for safety
                 targetSpeed = 48.0;
                 if (leader->info_.speed > targetSpeed) {
@@ -675,9 +691,9 @@ void* LeadingVehicle::heartbeatThreadEntry(void* arg) {
             if (age > DEGRADED_MS) {
                 allFollowersOk = false;
             }
-            if ((age > DEGRADED_MS) && (age < TIMEOUT_MS) && leader->getState() != DEGRADED) {
-                std::cout << COLOR_YELLOW << "[HEARTBEAT] Follower " << it->id << " heartbeat delayed. Entering DEGRADED mode.\n" << COLOR_RESET;
-                leader->setState(DEGRADED);
+            if ((age > DEGRADED_MS) && (age < TIMEOUT_MS) && leader->getState() != LS::DEGRADED) {
+                std::cout << COLOR_YELLOW << "[HEARTBEAT] Follower " << it->id << " heartbeat delayed. Entering LS::DEGRADED mode.\n" << COLOR_RESET;
+                leader->setState(LS::DEGRADED);
             } else if (it->lastHeartbeatMs == 0 || age > TIMEOUT_MS) {
                 std::cout << COLOR_RED << "[HEARTBEAT] Follower " << it->id << " timed out. Removing from platoon.\n" << COLOR_RESET;
 
@@ -703,9 +719,9 @@ void* LeadingVehicle::heartbeatThreadEntry(void* arg) {
             }
         }
         // If all followers are ok and leader is in degraded, exit degraded mode
-        if (allFollowersOk && leader->getState() == DEGRADED) {
-            std::cout << COLOR_GREEN << "[HEARTBEAT] All followers recovered. Exiting DEGRADED mode.\n" << COLOR_RESET;
-            leader->setState(NORMAL);
+        if (allFollowersOk && leader->getState() == LS::DEGRADED) {
+            std::cout << COLOR_GREEN << "[HEARTBEAT] All followers recovered. Exiting LS::DEGRADED mode.\n" << COLOR_RESET;
+            leader->setState(LS::NORMAL);
         }
         // (legacy maps removed; VehicleInfo entries already erased above)
         pthread_mutex_unlock(&leader->mutex_);
@@ -961,12 +977,14 @@ void LeadingVehicle::initOpenCL_AEB() {
         size_t len;
         char buffer[2048];
         clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
-        std::cerr << "[OPENCL ERROR] Build Log: " << buffer << std::endl;
+        std::cerr << "[OPENCL LS::ERROR] Build Log: " << buffer << std::endl;
         exit(1);
     }
 
     lidar_kernel = clCreateKernel(program, "check_lidar_safety", &ret);
+#ifndef UNIT_TEST
     std::cout << "[SYSTEM] AEB System (OpenCL) Initialized. Monitoring " << LIDAR_RAYS << " Lidar rays.\n";
+#endif
 }
 
 void LeadingVehicle::cleanOpenCL() {
@@ -1027,7 +1045,11 @@ bool LeadingVehicle::scanEnvironmentWithGPU() {
 }
 
 // Program start entry
+#ifdef UNIT_TEST
+int leader_main(int argc, char** argv) {
+#else
 int main(int argc, char** argv) {
+#endif
     // Terminal for event input
     if (argc >= 2 && std::string(argv[1]) == "input_mode") {
         int fd = open(EVENT_FIFO, O_WRONLY);
