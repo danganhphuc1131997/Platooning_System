@@ -48,10 +48,13 @@ int main() {
         std::cout << "\n========================================\n";
         std::cout << "[LEADER EVENT INPUT]\n";
         std::cout << "========================================\n";
-        std::cout << "1: Obstacle detected (leader stops)\n";
+        std::cout << "1: Obstacle detected (ON/OFF)\n";
         std::cout << "2: Traffic light RED\n";
         std::cout << "3: Traffic light GREEN\n";
         std::cout << "4: Cut-in vehicle alert\n";
+        std::cout << "5: Run out of energy\n";
+        std::cout << "6: Restore energy\n";
+        std::cout << "7: Leave platoon\n";
         std::cout << "0: Exit\n";
         std::cout << "========================================\n";
         std::cout << "Enter choice: ";
@@ -63,8 +66,8 @@ int main() {
             continue;
         }
 
-        if (choice < 0 || choice > 4) {
-            std::cout << "Invalid choice. Please select 0-4.\n";
+        if (choice < 0 || choice > 7) {
+            std::cout << "Invalid choice. Please select 0-7.\n";
             continue;
         }
 

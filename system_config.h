@@ -15,13 +15,13 @@ static const int SERVER_PORT = 5000;  // UDP server port for leader
 
 // Leader initial parameters
 const int LEADER_INITIAL_ID = 1;
-const double LEADER_INITIAL_POSITION = 0.0; // in meters
+const double LEADER_INITIAL_POSITION = 1000.0; // in meters (Start further ahead to allow followers behind)
 const double LEADER_INITIAL_SPEED = 60.0;   // in m/s
 
 // Follower initial parameters
 const int FOLLOWER_INITIAL_ID = 2;
 const double FOLLOWER_INITIAL_SPEED = 60.0; // in m/s
-const double FOLLOWER_INITIAL_POSITION = -20.0; // in meters
+const double FOLLOWER_INITIAL_POSITION = 980.0; // in meters (20m behind leader)
 
 // OPENCL Parameters for Lidar
 const int LIDAR_RAYS = 720;    // 720 rays per scan

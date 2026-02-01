@@ -64,10 +64,12 @@ int main(int argc, char* argv[]) {
         std::cout << "\n========================================\n";
         std::cout << "[FOLLOWER " << followerId << " EVENT INPUT]\n";
         std::cout << "========================================\n";
-        std::cout << "1: Traffic light RED (follower stops)\n";
-        std::cout << "2: Traffic light GREEN (follower resumes)\n";
-        std::cout << "3: Simulate comm loss (3s)\n";
-        std::cout << "4: Simulate comm loss (5s)\n";
+        std::cout << "1: Traffic light RED\n";
+        std::cout << "2: Traffic light GREEN\n";
+        std::cout << "3: Run out of energy\n";
+        std::cout << "4: Set delay after next GREEN (seconds)\n";
+        std::cout << "5: Simulate comm loss (3s)\n";
+        std::cout << "6: Simulate comm loss (5s)\n";
         std::cout << "0: Exit\n";
         std::cout << "========================================\n";
         std::cout << "Enter choice: ";
@@ -79,8 +81,27 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        if (choice < 0 || choice > 4) {
-            std::cout << "Invalid choice. Please select 0-4.\n";
+        if (choice < 0 || choice > 6) {
+            std::cout << "Invalid choice. Please select 0-6.\n";
+            continue;
+        }
+
+        if (choice == 4) {
+             int sec = 0;
+             std::cout << "Delay seconds: ";
+             if (!(std::cin >> sec)) {
+                 std::cin.clear();
+                 std::cin.ignore(10000, '\n');
+                 std::cout << "Invalid delay input.\n";
+                 continue;
+             }
+             int code = 1000 + sec; // Protocol used in follow.cpp
+             ssize_t written = write(fd, &code, sizeof(int));
+             if (written != sizeof(int)) {
+                std::cerr << "Failed to write to FIFO. Follower may have stopped.\n";
+                break;
+            }
+            std::cout << "✓ Sent: Delay " << sec << "s\n";
             continue;
         }
 
@@ -101,9 +122,6 @@ int main(int argc, char* argv[]) {
                 break;
             case 3:
                 std::cout << "✓ Sent: Run out of energy\n";
-                break;
-            case 4:
-                std::cout << "✓ Sent: Delay after next GREEN (seconds)\n\n";
                 break;
             case 5:
                 std::cout << "✓ Sent: Simulate comm loss (3s)\n";
