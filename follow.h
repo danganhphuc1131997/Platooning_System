@@ -29,7 +29,8 @@ enum class FollowerState : std::uint8_t {
     STOPPING_FOR_RED_LIGHT, // Stopping for red light
     DECOUPLED,              // Temporarily decoupled from platoon (left behind)
     LOW_ENERGY,              // Low energy, reduced speed
-    STOPPING_FOR_OBSTACLE   // Stopping for obstacle detected ahead
+    STOPPING_FOR_OBSTACLE,   // Stopping for obstacle detected ahead
+    UNDER_MAINTAIN           // Maintenance mode after removal before attempting to rejoin
 };
 class FollowingVehicle {
 public:
@@ -86,6 +87,7 @@ private:
     bool delayAfterNextGreenArmed_{false};
     int delayAfterNextGreenSec_{0};
     std::int64_t delayedUntilMs_{0};
+    std::int64_t rejoinTimeMs_{0}; // Timestamp to attempt rejoin after removal
 
     // Timing
     static std::int64_t nowMs();

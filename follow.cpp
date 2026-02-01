@@ -384,16 +384,19 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     break;
                 case REMOVE_VEHICLE: {
                     if (static_cast<size_t>(recvLen) < sizeof(RemoveVehicleMessage)) break;
-                    // Pause 5 seconds before attempting to rejoin
-                    follower->setState(FS::STOPPED);
-                    std::this_thread::sleep_for(std::chrono::seconds(5));
-                    follower->setState(FS::NORMAL);
+                    
                     RemoveVehicleMessage removeMsg;
                     std::memcpy(&removeMsg, buffer, sizeof(removeMsg));
+                    
                     if (removeMsg.vehicleId == follower->info_.id) {
-                        std::cout << COLOR_RED << "[FOLLOWER " << follower->info_.id << "] Received remove notification. Will request rejoin.\n" << COLOR_RESET;
-                        // Reset local platoon snapshot and mark for periodic rejoin attempts
+                        std::cout << COLOR_RED << "[FOLLOWER " << follower->info_.id << "] Received remove notification. Waiting 5s before rejoin attempt.\n" << COLOR_RESET;
+                        
                         pthread_mutex_lock(&follower->leaderMutex_);
+                        // Enter waiting state
+                        follower->setState(FS::UNDER_MAINTAIN);
+                        follower->rejoinTimeMs_ = nowMs() + 5000;
+
+                        // Reset local platoon snapshot
                         follower->leaderPosition_ = 0.0;
                         follower->leaderSpeed_ = 0.0;
                         follower->lastLeaderUpdateMs_ = 0;
@@ -401,24 +404,14 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                         follower->rearVehicleInfo_.id = -1;
                         follower->platoonState_.vehicles.clear();
                         follower->trafficLight_ = LIGHT_GREEN;
-                        // Ensure we are not marked decoupled so run loop treats us as FS::NORMAL
+                        // Ensure we are not marked decoupled
                         follower->decoupled_ = false;
                         follower->delayedUntilMs_ = 0;
-                        follower->setState(FS::NORMAL);
+                        follower->tryingRejoin_ = false;
                         pthread_mutex_unlock(&follower->leaderMutex_);
-
-                        // Ensure we resume sending status so leader updates heartbeat timestamp
-                        follower->stopSendingStatus_ = false;
-                        // Send an immediate status and a couple command to rejoin
-                        StatusUpdateMessage status{};
-                        status.type = MessageType::STATUS_UPDATE;
-                        status.info = follower->info_;
-                        status.timestamp = nowMs();
-                        sendto(follower->clientSocket_, &status, sizeof(status), 0,
-                               (const struct sockaddr*)&follower->leaderAddr_, sizeof(follower->leaderAddr_));
-                        follower->tryingRejoin_ = true;
-                        follower->lastReconnectAttemptMs_ = nowMs();
-                        follower->sendCoupleCommandToLeader(true);
+                        
+                        // We do NOT block the thread here anymore.
+                        // The runThread will handle the timer expiration.
                     }
                     break;
                 }
@@ -575,7 +568,8 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
 
         // Detect "left-behind" on GREEN when leader is moving and this follower is still stopped
         // Don't mark decoupled if we're currently attempting to rejoin after removal
-        if (!isDecoupled && !tryingRejoin && light == LIGHT_GREEN) {
+        // Also don't decouple if we are already in CATCHING_UP state (attempting to close gap)
+        if (!isDecoupled && !tryingRejoin && light == LIGHT_GREEN && follower->getState() != FS::CATCHING_UP) {
             const bool leaderMoving = (leaderSp > 0.5);
             const bool thisStopped = (follower->info_.speed < LEFT_BEHIND_STOPPED_EPS);
             if (leaderMoving && thisStopped && gap > LEFT_BEHIND_GAP_THRESHOLD) {
@@ -682,6 +676,31 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
                     follower->info_.speed = desiredSpeed;
                 }
                 break;
+            case FS::UNDER_MAINTAIN:
+                follower->info_.speed = 0.0;
+                if (nowMs() >= follower->rejoinTimeMs_) {
+                   std::cout << "[FOLLOWER " << follower->info_.id << "] Maintenance finished. Requesting rejoin.\n";
+                   
+                   pthread_mutex_lock(&follower->leaderMutex_);
+                   follower->setState(FS::CATCHING_UP);
+                   follower->tryingRejoin_ = true;
+                   follower->lastReconnectAttemptMs_ = nowMs();
+                   pthread_mutex_unlock(&follower->leaderMutex_);
+                   
+                   follower->stopSendingStatus_ = false;
+                   
+                   StatusUpdateMessage status{};
+                   status.type = MessageType::STATUS_UPDATE;
+                   status.info = follower->info_;
+                   status.info.speed = 0.0; // Ensure we report 0 speed initially
+                   status.timestamp = nowMs();
+                   // Send status
+                   sendto(follower->clientSocket_, &status, sizeof(status), 0,
+                          (const struct sockaddr*)&follower->leaderAddr_, sizeof(follower->leaderAddr_));
+
+                   follower->sendCoupleCommandToLeader(true);
+                }
+                break;
             default:
                 break;
         }
@@ -773,6 +792,7 @@ void* FollowingVehicle::displayThreadEntry(void* arg) {
             case FS::STOPPING_FOR_OBSTACLE: stateStr = "State::STOPPING_FOR_OBSTACLE"; break;
             case FS::DECOUPLED: stateStr = "State::DECOUPLED"; break;
             case FS::LOW_ENERGY: stateStr = "State::LOW_ENERGY"; break;
+            case FS::UNDER_MAINTAIN: stateStr = "State::UNDER_MAINTAIN"; break;
             default: stateStr = "UNKNOWN"; break;
         }
         std::cout << "\033[2J\033[H"; // clear screen + home
@@ -780,7 +800,13 @@ void* FollowingVehicle::displayThreadEntry(void* arg) {
         std::cout << "Position: " << follower->info_.position
                   << "  Speed: " << follower->info_.speed
                   << "  State: " << stateStr << "\n";
-        std::cout << "Gap to front: " << gap << " m\n";
+        
+        if (state == FS::UNDER_MAINTAIN) {
+            std::cout << "Gap to front: N/A (Maintenance)\n";
+        } else {
+            std::cout << "Gap to front: " << gap << " m\n";
+        }
+
         std::cout << "Front vehicle: " << ((frontId == -1 || frontMode == LeaderMode) ? ("Leader (ID " + std::to_string(frontId == -1 ? leaderId : frontId) + ")") : ("ID " + std::to_string(frontId)))
                   << " (pos=" << refPos << ", spd=" << (frontId == -1 || frontMode == LeaderMode ? leaderSp : frontSp) << ")\n";
         std::cout << "Rear vehicle: " << (rearId == -1 ? "None" : ("ID " + std::to_string(rearId))) << "\n";
