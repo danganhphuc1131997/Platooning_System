@@ -229,11 +229,32 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                         isDecoupled = follower->decoupled_;
                         hasDelay = follower->delayAfterNextGreenArmed_;
                         delaySec = follower->delayAfterNextGreenSec_;
+                        
+                        // Capture rear vehicle info while holding lock
+                        VehicleInfo rearForDelay = follower->rearVehicleInfo_;
+
                         if (hasDelay) {
                             follower->delayedUntilMs_ = nowMs() + static_cast<std::int64_t>(delaySec) * 1000;
                             follower->delayAfterNextGreenArmed_ = false; // consume
                         }
                         pthread_mutex_unlock(&follower->leaderMutex_);
+
+                        // If we are delayed, instruct the rear vehicle to also delay
+                        if (hasDelay && delaySec > 0 && rearForDelay.id != -1 && rearForDelay.ipAddress != 0) {
+                            DelayNotificationMessage delayMsg{};
+                            delayMsg.type = MessageType::DELAY_NOTIFICATION;
+                            delayMsg.delaySeconds = delaySec;
+                            delayMsg.timestamp = nowMs();
+                            
+                            struct sockaddr_in rearAddr{};
+                            rearAddr.sin_family = AF_INET;
+                            rearAddr.sin_addr.s_addr = rearForDelay.ipAddress;
+                            rearAddr.sin_port = rearForDelay.port;
+                            
+                            sendto(follower->clientSocket_, &delayMsg, sizeof(delayMsg), 0,
+                                   (const struct sockaddr*)&rearAddr, sizeof(rearAddr));
+                            std::cout << "[FOLLOWER " << follower->info_.id << "] Sent delay notification to rear vehicle " << rearForDelay.id << "\n";
+                        }
 
                         if (isDecoupled) {
                             follower->setState(FS::DECOUPLED);
@@ -487,6 +508,19 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                         }
                         pthread_mutex_unlock(&follower->leaderMutex_);
                     }
+                    break;
+                }
+                case DELAY_NOTIFICATION: {
+                    if (static_cast<size_t>(recvLen) < sizeof(DelayNotificationMessage)) break;
+                    DelayNotificationMessage delayMsg;
+                    std::memcpy(&delayMsg, buffer, sizeof(delayMsg));
+                    
+                    std::cout << "[FOLLOWER " << follower->info_.id << "] Received DELAY_NOTIFICATION (seconds=" << delayMsg.delaySeconds << ")\n";
+                    
+                    pthread_mutex_lock(&follower->leaderMutex_);
+                    follower->delayAfterNextGreenArmed_ = true;
+                    follower->delayAfterNextGreenSec_ = delayMsg.delaySeconds;
+                    pthread_mutex_unlock(&follower->leaderMutex_);
                     break;
                 }
                 default:

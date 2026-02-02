@@ -23,7 +23,14 @@ enum MessageType : std::uint8_t {
     GAS_STATION_ALERT = 6,  // Gas station alert
     OBSTACLE_DETECTED_ALERT = 7, // Obstacle detected alert
     REMOVE_VEHICLE = 8, // Remove vehicle from platoon
-    LEAVE_PLATOON = 9 // Vehicle leaving platoon
+    LEAVE_PLATOON = 9, // Vehicle leaving platoon
+    DELAY_NOTIFICATION = 10 // Notification to delay start
+};
+
+struct DelayNotificationMessage {
+    MessageType type;       // Message type
+    int delaySeconds;       // How many seconds to delay
+    std::int64_t timestamp; // Timestamp of the message
 };
 
 struct LeavePlatoonMessage {
