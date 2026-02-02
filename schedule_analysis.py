@@ -72,10 +72,10 @@ def main():
             self.period = period
     
     tasks = [
-        Task("runThread", 0.32, 100),           # 316 μs = 0.32 ms
-        Task("sendStatusThread", 9.23, 100),    # 9228 μs = 9.23 ms
-        Task("displayThread", 1.27, 300),       # 1272 μs = 1.27 ms
-        Task("heartbeatThread", 0.01, 1000)     # 10 μs = 0.01 ms
+        Task("runThread", 0.09236, 100),           # 92.357 μs = 0.09236 ms
+        Task("sendStatusThread", 6.594, 100),      # 6594.36 μs = 6.594 ms
+        Task("displayThread", 0.7495, 300),        # 749.527 μs = 0.7495 ms
+        Task("heartbeatThread", 0.3068, 1000)      # 306.776 μs = 0.3068 ms
     ]
 
     print("="*70)

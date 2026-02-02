@@ -70,7 +70,7 @@ __kernel void check_lidar_safety(__global const float *distances,
 
 // Constructor
 LeadingVehicle::LeadingVehicle(int id, double initialPosition, double initialSpeed)
-    : state_(LS::NORMAL), serverRunning_(false), originalSpeed_(initialSpeed), energyAlertSent_(false), stopTimeMs_(0), gasStationStop_(false) {
+    : state_(LS::NORMAL), serverRunning_(false), originalSpeed_(initialSpeed), energyAlertSent_(false), stopTimeMs_(0), gasStationStop_(false), openclInitialized_(false) {
     if (id <= 0) {
         throw std::invalid_argument("ID must be positive");
     }
@@ -1110,16 +1110,20 @@ void LeadingVehicle::initOpenCL_AEB() {
         char buffer[2048];
         clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
         std::cerr << "[OPENCL LS::ERROR] Build Log: " << buffer << std::endl;
-        exit(1);
+        std::cerr << "[OPENCL LS::WARNING] Falling back to CPU-only mode" << std::endl;
+        openclInitialized_ = false;
+        return;
     }
 
     lidar_kernel = clCreateKernel(program, "check_lidar_safety", &ret);
+    openclInitialized_ = true;
 #ifndef UNIT_TEST
     std::cout << "[SYSTEM] AEB System (OpenCL) Initialized. Monitoring " << LIDAR_RAYS << " Lidar rays.\n";
 #endif
 }
 
 void LeadingVehicle::cleanOpenCL() {
+    if (!openclInitialized_) return;
     clReleaseMemObject(input_distance_buffer);
     clReleaseMemObject(output_risk_buffer);
     clReleaseKernel(lidar_kernel);
@@ -1145,6 +1149,14 @@ void LeadingVehicle::updateSimulatedLidar() {
 }
 
 bool LeadingVehicle::scanEnvironmentWithGPU() {
+    // CPU Fallback if OpenCL failed to initialize
+    if (!openclInitialized_) {
+        float threshold = (float)SAFETY_DIST;
+        for (float dist : lidar_data_) {
+            if (dist < threshold && dist > 0.1f) return true;
+        }
+        return false;
+    }
 #ifdef ENABLE_WCET
     // CPU Fallback for WCET (prevents crash if OpenCL failed)
     float threshold = (float)SAFETY_DIST;

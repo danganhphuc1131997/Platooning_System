@@ -108,6 +108,7 @@ private:
 
     std::vector<float> lidar_data_; // Lidar distance data
     std::vector<int> risk_map_;     // Risk map data
+    bool openclInitialized_;        // Track if OpenCL initialized successfully
 
     void initOpenCL_AEB();          // Initialize OpenCL for AEB
     void cleanOpenCL();             // Clean up OpenCL resources

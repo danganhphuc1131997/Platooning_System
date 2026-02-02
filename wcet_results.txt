@@ -1,0 +1,5 @@
+[WCET] Measurement ENABLED (compiled with -DENABLE_WCET)
+[WCET] runThread: Max=92.357us, Min=6.862us, Avg=12.9268us, Samples=395
+[WCET] sendStatusThread: Max=6594.36us, Min=1.41us, Avg=147.128us, Samples=394
+[WCET] displayThread: Max=749.527us, Min=14.965us, Avg=47.1665us, Samples=133
+[WCET] heartbeatThread: Max=306.776us, Min=1.931us, Avg=17.6701us, Samples=39
