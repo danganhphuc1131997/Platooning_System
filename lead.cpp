@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <string>
 #include <stdexcept>
+#include <set>
 
 using LS = LeaderState;
 
@@ -241,7 +242,7 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                         fi.speed = status.info.speed;
                         fi.mode = FollowerMode;
                         leader->platoonState_.vehicles.push_back(fi);
-                        std::cout << "Added new vehicle " << fi.id << " to platoon\n";
+                        std::cout << COLOR_GREEN <<"Added new vehicle " << fi.id << " to platoon\n" << COLOR_RESET;
                         it = leader->platoonState_.vehicles.end() - 1; // point to newly added
                     }
 
@@ -265,10 +266,10 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                     CoupleCommandMessage cmd;
                     std::memcpy(&cmd, buffer, sizeof(cmd));
 
-                    std::cout << "Received couple command from vehicle "
+                    std::cout << COLOR_GREEN << "Received couple command from vehicle "
                             << cmd.info.id
                             << " to " << (cmd.couple ? "couple" : "decouple")
-                            << " (ts=" << cmd.timestamp << ")\n";
+                            << " (ts=" << cmd.timestamp << ")\n" << COLOR_RESET;
 
                     // Protect platoonState_ when modifying
                     pthread_mutex_lock(&leader->mutex_);
@@ -287,13 +288,13 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                             fi.port = cmd.info.port;
                             fi.mode = FollowerMode;
                             leader->platoonState_.vehicles.push_back(fi);
-                            std::cout << "Added vehicle " << fi.id << " to platoon\n";
+                            std::cout << COLOR_GREEN << "Added vehicle " << fi.id << " to platoon\n" << COLOR_RESET;
                         } else {
                             it->position = cmd.info.position;
                             it->speed = cmd.info.speed;
                             it->ipAddress = cmd.info.ipAddress;
                             it->port = cmd.info.port;
-                            std::cout << "Updated vehicle " << it->id << " info\n";
+                            std::cout << COLOR_GREEN << "Updated vehicle " << it->id << " info\n" << COLOR_RESET;
                         }
                     } else {
                         leader->platoonState_.vehicles.erase(
@@ -302,7 +303,7 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                                 leader->platoonState_.vehicles.end(),
                                 [&](const VehicleInfo& v){ return v.id == cmd.info.id; }),
                             leader->platoonState_.vehicles.end());
-                        std::cout << "Removed vehicle " << cmd.info.id << " from platoon\n";
+                        std::cout << COLOR_RED << "Removed vehicle " << cmd.info.id << " from platoon\n" << COLOR_RESET;
                     }
 
                     // Update ip/port/lastHeartbeat for the vehicle (if still present)
@@ -331,7 +332,7 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                     TrafficLightMessage tlMsg;
                     std::memcpy(&tlMsg, buffer, sizeof(tlMsg));
                     TrafficLightStatus alert = static_cast<TrafficLightStatus>(tlMsg.status);
-                    std::cout << "Received traffic light alert from vehicle "
+                    std::cout << COLOR_YELLOW << "Received traffic light alert from vehicle "
                               << followerAddr.sin_addr.s_addr << ":"
                               << ntohs(followerAddr.sin_port) << " - "
                               << (alert == LIGHT_RED ? "RED" : "GREEN") << std::endl;
@@ -678,49 +679,78 @@ void* LeadingVehicle::heartbeatThreadEntry(void* arg) {
     const int TIMEOUT_MS = 5000; // Timeout for follower heartbeat - remove after 5 seconds
     const int DEGRADED_MS = 1000; // Enter degraded mode after 1 second of heartbeat timeout 
     
+    std::set<int> degradedVehicles;
+
     while (leader->serverRunning_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(HEARTBEAT_INTERVAL_MS));
         std::int64_t currentTime = nowMs();
 
         std::vector<int> toRemove;
         bool allFollowersOk = true;
+        std::set<int> currentDegraded;
+
         pthread_mutex_lock(&leader->mutex_);
         for (auto it = leader->platoonState_.vehicles.begin(); it != leader->platoonState_.vehicles.end(); ) {
             if (it->id == leader->info_.id) { ++it; continue; } // skip leader
             const std::int64_t age = (it->lastHeartbeatMs == 0) ? (INT64_MAX) : (currentTime - it->lastHeartbeatMs);
+            
             if (age > DEGRADED_MS) {
                 allFollowersOk = false;
+                if (age < TIMEOUT_MS) currentDegraded.insert(it->id);
             }
+
             if ((age > DEGRADED_MS) && (age < TIMEOUT_MS) && leader->getState() != LS::DEGRADED) {
                 std::cout << COLOR_YELLOW << "[HEARTBEAT] Follower " << it->id << " heartbeat delayed. Entering LS::DEGRADED mode.\n" << COLOR_RESET;
                 leader->setState(LS::DEGRADED);
             } else if (it->lastHeartbeatMs == 0 || age > TIMEOUT_MS) {
-                std::cout << COLOR_RED << "[HEARTBEAT] Follower " << it->id << " timed out. Removing from platoon.\n" << COLOR_RESET;
+                int removedId = it->id;
+                uint32_t removedIp = it->ipAddress;
+                uint16_t removedPort = it->port;
 
-                toRemove.push_back(it->id);
+                std::cout << COLOR_RED << "[HEARTBEAT] Follower " << removedId << " timed out. Removing from platoon.\n" << COLOR_RESET;
+
+                toRemove.push_back(removedId);
                 it = leader->platoonState_.vehicles.erase(it);
 
                 // Send remove notification to the follower
                 RemoveVehicleMessage removeMsg{};
                 removeMsg.type = MessageType::REMOVE_VEHICLE;
-                removeMsg.vehicleId = it->id;
+                removeMsg.vehicleId = removedId;
                 removeMsg.timestamp = nowMs();
                 struct sockaddr_in followerAddr{};
                 followerAddr.sin_family = AF_INET;
-                followerAddr.sin_addr.s_addr = it->ipAddress;
-                followerAddr.sin_port = it->port;
+                followerAddr.sin_addr.s_addr = removedIp;
+                followerAddr.sin_port = removedPort;
                 ssize_t sentBytes = sendto(leader->serverSocket_, &removeMsg, sizeof(removeMsg), 0,
                                            (const struct sockaddr*)&followerAddr, sizeof(followerAddr));
                 if (sentBytes < 0) {
-                    std::cerr << "Failed to send remove notification to follower " << it->id << std::endl;
+                    std::cerr << "Failed to send remove notification to follower " << removedId << std::endl;
                 }
             } else {
                 ++it;
             }
         }
+
+        // Check for recoveries
+        if (leader->getState() == LS::DEGRADED) {
+            for (int id : degradedVehicles) {
+                bool removed = false;
+                for (int remId : toRemove) { if (remId == id) removed = true; }
+
+                if (currentDegraded.find(id) == currentDegraded.end() && !removed) {
+                    std::cout << COLOR_GREEN << "[HEARTBEAT] Follower " << id << " recovered.\n" << COLOR_RESET;
+                }
+            }
+        }
+        degradedVehicles = currentDegraded;
+
         // If all followers are ok and leader is in degraded, exit degraded mode
         if (allFollowersOk && leader->getState() == LS::DEGRADED) {
-            std::cout << COLOR_GREEN << "[HEARTBEAT] All followers recovered. Exiting LS::DEGRADED mode.\n" << COLOR_RESET;
+            if (toRemove.empty()) {
+                std::cout << COLOR_GREEN << "[HEARTBEAT] Exiting LS::DEGRADED mode.\n" << COLOR_RESET;
+            } else {
+                std::cout << COLOR_YELLOW << "[HEARTBEAT] Exiting LS::DEGRADED mode (Follower removed).\n" << COLOR_RESET;
+            }
             leader->setState(LS::NORMAL);
         }
         // (legacy maps removed; VehicleInfo entries already erased above)

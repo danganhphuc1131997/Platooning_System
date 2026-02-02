@@ -13,14 +13,14 @@
 #include <algorithm>
 #include <fcntl.h>
 #include <sys/stat.h>
-
-using FS = FollowerState;
+#include <stdexcept>
 
 // ANSI colors for terminal output
 static const char* COLOR_RED="[31m";
 static const char* COLOR_RESET="[0m";
+static const char* COLOR_YELLOW="[33m";
 
-#include <stdexcept>
+using FS = FollowerState;
 
 // Constructor
 FollowingVehicle::FollowingVehicle(int id,
@@ -389,7 +389,7 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     std::memcpy(&removeMsg, buffer, sizeof(removeMsg));
                     
                     if (removeMsg.vehicleId == follower->info_.id) {
-                        std::cout << COLOR_RED << "[FOLLOWER " << follower->info_.id << "] Received remove notification. Waiting 5s before rejoin attempt.\n" << COLOR_RESET;
+                        std::cout << COLOR_YELLOW << "[FOLLOWER " << follower->info_.id << "] Received remove notification. Waiting for maintenance.\n" << COLOR_RESET;
                         
                         pthread_mutex_lock(&follower->leaderMutex_);
                         // Enter waiting state
@@ -560,16 +560,22 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
             follower->info_.speed = 0.0;
             follower->setState(FS::STOPPED);
         } else if (!isDecoupled && light == LIGHT_GREEN && delayedUntil != 0 && delayedUntil <= now && follower->getState() == FS::STOPPED) {
+            std::cout << "[FOLLOWER " << follower->info_.id << "] Delay expired. Decoupling to catch up." << std::endl;
             pthread_mutex_lock(&follower->leaderMutex_);
             follower->delayedUntilMs_ = 0;
+            follower->decoupled_ = true;
             pthread_mutex_unlock(&follower->leaderMutex_);
-            follower->setState(FS::STARTING);
+            
+            follower->sendCoupleCommandToLeader(false);
+            follower->setState(FS::DECOUPLED);
+            isDecoupled = true;
         }
 
         // Detect "left-behind" on GREEN when leader is moving and this follower is still stopped
         // Don't mark decoupled if we're currently attempting to rejoin after removal
         // Also don't decouple if we are already in CATCHING_UP state (attempting to close gap)
-        if (!isDecoupled && !tryingRejoin && light == LIGHT_GREEN && follower->getState() != FS::CATCHING_UP) {
+        // CRITICAL: Do NOT decouple if we are explicitly delaying our start (delayedUntil > now)
+        if (!isDecoupled && !tryingRejoin && light == LIGHT_GREEN && follower->getState() != FS::CATCHING_UP && (delayedUntil == 0 || delayedUntil <= now)) {
             const bool leaderMoving = (leaderSp > 0.5);
             const bool thisStopped = (follower->info_.speed < LEFT_BEHIND_STOPPED_EPS);
             if (leaderMoving && thisStopped && gap > LEFT_BEHIND_GAP_THRESHOLD) {
@@ -661,7 +667,7 @@ void* FollowingVehicle::runThreadEntry(void* arg) {
                 }
 
                 // Otherwise, accelerate above leader speed (bounded)
-                follower->info_.speed = std::round(std::min(leaderSp + CATCH_UP_SPEED_BONUS,
+                follower->info_.speed = std::round(std::min(100.0,
                                                            follower->info_.speed + accel * dt));
                 break;
             case FS::LOW_ENERGY:
