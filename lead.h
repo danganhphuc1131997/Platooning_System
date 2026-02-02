@@ -24,6 +24,7 @@
 #include <CL/cl.h>
 #include <vector>
 #include <algorithm>
+#include "matrix_clock.h"
 
 enum class LeaderState : std::uint8_t {
     NORMAL = 0,  // Normal driving
@@ -59,6 +60,9 @@ private:
     std::int64_t stopTimeMs_; // Time when stopped for auto start
     bool gasStationStop_; // Flag to indicate if current stop is for gas station
     PlatoonState platoonState_; // Current state of the platoon
+
+    // Matrix Clock for distributed synchronization
+    MatrixClock matrixClock_;
 
     // Mutex for platoon state
     pthread_mutex_t mutex_;

@@ -18,6 +18,7 @@
 #include <pthread.h>
 #include "vehicle.h"
 #include "system_config.h"
+#include "matrix_clock.h"
 
 enum class FollowerState : std::uint8_t {
     NORMAL = 0,             // Normal following
@@ -61,6 +62,9 @@ private:
 
     PlatoonState platoonState_; // Current state of the platoon
     
+    // Matrix Clock for distributed synchronization
+    MatrixClock matrixClock_;
+       
     // Leader snapshot (updated by recv thread when leader STATUS_UPDATE received)
     double leaderPosition_{}; // latest leader position (meters)
     double leaderSpeed_{};    // latest leader speed (m/s)

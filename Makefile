@@ -2,6 +2,7 @@
 # Builds all programs with pthread support
 
 CXX = g++
+# CXXFLAGS = -std=c++17 -pthread -Wall -DCL_TARGET_OPENCL_VERSION=120
 CXXFLAGS = -std=c++17 -pthread -Wall
 LDLIBS = -lOpenCL
 TARGET_DIR = .
@@ -15,15 +16,15 @@ LEADER_INPUT = $(TARGET_DIR)/leader_input
 FOLLOWER_INPUT = $(TARGET_DIR)/follower_input
 
 # All targets
-all: $(LEAD) $(FOLLOW) $(LEADER_INPUT) $(FOLLOWER_INPUT)
+all: clean $(LEAD) $(FOLLOW) $(LEADER_INPUT) $(FOLLOWER_INPUT)
 
 # Build lead vehicle program
-$(LEAD): lead.cpp lead.h vehicle.h message.h system_config.h
-	$(CXX) $(CXXFLAGS) lead.cpp -o $(LEAD) $(LDLIBS)
+$(LEAD): lead.cpp lead.h vehicle.h message.h system_config.h matrix_clock.h wcet_measurement.h wcet_measurement.cpp
+	$(CXX) $(CXXFLAGS) lead.cpp wcet_measurement.cpp -o $(LEAD) $(LDLIBS)
 
 # Build follow vehicle program
-$(FOLLOW): follow.cpp follow.h vehicle.h message.h system_config.h
-	$(CXX) $(CXXFLAGS) follow.cpp -o $(FOLLOW) $(LDLIBS)
+$(FOLLOW): follow.cpp follow.h vehicle.h message.h system_config.h matrix_clock.h wcet_measurement.h wcet_measurement.cpp
+	$(CXX) $(CXXFLAGS) follow.cpp wcet_measurement.cpp -o $(FOLLOW) $(LDLIBS)
 
 # Build leader input program
 $(LEADER_INPUT): leader_input.cpp

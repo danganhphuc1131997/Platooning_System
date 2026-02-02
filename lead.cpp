@@ -15,6 +15,26 @@
 #include <string>
 #include <stdexcept>
 #include <set>
+#include <csignal>
+#include "wcet_measurement.h"
+
+// Global WCET measurement objects for each thread
+// Compile with -DENABLE_WCET to enable measurement
+#ifdef ENABLE_WCET
+// Signal handler flag
+std::atomic<bool> keepRunning{true};
+
+void signalHandler(int signum) {
+    std::cout << "\nInterrupt signal (" << signum << ") received.\n";
+    keepRunning = false;
+}
+
+WCETMeasurement wcet_run("runThread");
+WCETMeasurement wcet_send("sendStatusThread");
+WCETMeasurement wcet_display("displayThread");
+WCETMeasurement wcet_heartbeat("heartbeatThread");
+WCETMeasurement wcet_recv("recvThread");
+#endif
 
 using LS = LeaderState;
 
@@ -64,6 +84,9 @@ LeadingVehicle::LeadingVehicle(int id, double initialPosition, double initialSpe
     info_.ipAddress = inet_addr("127.0.0.1");
     info_.port = htons(SERVER_PORT);
     platoonState_.leaderId = id;
+
+    // Initialize matrix clock (use vehicle ID as process ID)
+    matrixClock_.init(id, MAX_PLATOON_VEHICLES);
 
     // Create event queue
     pthread_mutex_init(&eventMutex_, nullptr);
@@ -163,6 +186,10 @@ void LeadingVehicle::sendPlatoonState() {
     psMsg.type = MessageType::PLATOON_STATE;
     psMsg.timestamp = nowMs();
 
+    // Update matrix clock on send
+    matrixClock_.onSend();
+    psMsg.matrixClock = matrixClock_;
+
     pthread_mutex_lock(&mutex_);
     psMsg.leaderId = platoonState_.leaderId;
 
@@ -224,6 +251,9 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                     StatusUpdateMessage status;
                     std::memcpy(&status, buffer, sizeof(status));
 
+                    // Merge matrix clock from received message
+                    leader->matrixClock_.onReceive(status.matrixClock);
+
                     // Protect platoonState_ when modifying
                     pthread_mutex_lock(&leader->mutex_);
 
@@ -265,7 +295,10 @@ void* LeadingVehicle::recvThreadEntry(void* arg) {
                     // Safe copy from network buffer into local struct
                     CoupleCommandMessage cmd;
                     std::memcpy(&cmd, buffer, sizeof(cmd));
-
+                    
+                    // Merge matrix clock from received message
+                    leader->matrixClock_.onReceive(cmd.matrixClock);
+                    
                     std::cout << COLOR_GREEN << "Received couple command from vehicle "
                             << cmd.info.id
                             << " to " << (cmd.couple ? "couple" : "decouple")
@@ -544,6 +577,11 @@ void* LeadingVehicle::displayThreadEntry(void* arg) {
     const int REFRESH_MS = 300; // refresh interval
     LeadingVehicle* leader = static_cast<LeadingVehicle*>(arg);
     while (leader->serverRunning_) {
+
+#ifdef ENABLE_WCET
+        wcet_display.start();
+#endif
+        
         // Build display under mutex to get consistent snapshot
         pthread_mutex_lock(&leader->mutex_);
         LeaderState state = leader->getState();
@@ -571,7 +609,25 @@ void* LeadingVehicle::displayThreadEntry(void* arg) {
                       << ", Speed: " << v.speed << " m/s"
                       << ", Mode: " << (v.mode == LeaderMode ? "Leader" : "Follower") << "\n";
         }
+
+        // Display full matrix clock (what leader knows about all processes' views)
+        std::cout << "Matrix Clock:\n";
+        for (const auto& vi : leader->platoonState_.vehicles) {
+            std::cout << "  P" << vi.id << ": [";
+            bool first = true;
+            for (const auto& vj : leader->platoonState_.vehicles) {
+                if (!first) std::cout << ", ";
+                std::cout << leader->matrixClock_.matrix[vi.id][vj.id];
+                first = false;
+            }
+            std::cout << "]\n";
+        }
+
         pthread_mutex_unlock(&leader->mutex_);
+
+#ifdef ENABLE_WCET
+        wcet_display.stop();
+#endif
 
         std::this_thread::sleep_for(std::chrono::milliseconds(REFRESH_MS));
     }
@@ -587,6 +643,11 @@ void* LeadingVehicle::runThreadEntry(void* arg) {
     const double decel = 12;   // m/s^2 when stopping
 
     while (leader->serverRunning_) {
+
+#ifdef ENABLE_WCET
+        wcet_run.start();
+#endif
+        
         // For OpenCL Lidar processing******************************************************************************
         // Update sensor data
         leader->updateSimulatedLidar();
@@ -667,6 +728,10 @@ void* LeadingVehicle::runThreadEntry(void* arg) {
         }
         pthread_mutex_unlock(&leader->mutex_);
 
+#ifdef ENABLE_WCET
+        wcet_run.stop();
+#endif
+
         std::this_thread::sleep_for(std::chrono::milliseconds(TIMESTEP_MS));
     }
 
@@ -683,6 +748,10 @@ void* LeadingVehicle::heartbeatThreadEntry(void* arg) {
 
     while (leader->serverRunning_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(HEARTBEAT_INTERVAL_MS));
+
+#ifdef ENABLE_WCET
+        wcet_heartbeat.start();
+#endif
         std::int64_t currentTime = nowMs();
 
         std::vector<int> toRemove;
@@ -758,6 +827,11 @@ void* LeadingVehicle::heartbeatThreadEntry(void* arg) {
 
         if (!toRemove.empty()) leader->sendPlatoonState();
     }
+
+#ifdef ENABLE_WCET
+        wcet_heartbeat.stop();
+#endif 
+
     return nullptr;
 }
 
@@ -766,6 +840,11 @@ void* LeadingVehicle::sendStatusThreadEntry(void* arg) {
 
     const int STATUS_INTERVAL_MS = 100; // Send status every 100 ms
     while (leader->serverRunning_) {
+#ifdef ENABLE_WCET
+        wcet_send.start();
+#endif
+        // Update matrix clock on send
+        leader->matrixClock_.onSend();
         // Build status message
         StatusUpdateMessage status;
         status.type = MessageType::STATUS_UPDATE;
@@ -774,6 +853,7 @@ void* LeadingVehicle::sendStatusThreadEntry(void* arg) {
         status.info.speed = leader->info_.speed;
         status.info.mode = leader->info_.mode;
         status.timestamp = nowMs();
+        status.matrixClock = leader->matrixClock_;
 
         // Send to all known follower addresses
         pthread_mutex_lock(&leader->mutex_);
@@ -791,6 +871,17 @@ void* LeadingVehicle::sendStatusThreadEntry(void* arg) {
             }
         }
         pthread_mutex_unlock(&leader->mutex_);
+                
+        // Also send full platoon state periodically to ensure matrix clock sync
+        // sendPlatoonState holds its own mutex lock, so we call it outside the lock block above
+        static int loopCount = 0;
+        if (loopCount++ % 5 == 0) { // Every 500ms
+             leader->sendPlatoonState();
+        }
+
+#ifdef ENABLE_WCET
+        wcet_send.stop();
+#endif
         std::this_thread::sleep_for(std::chrono::milliseconds(STATUS_INTERVAL_MS));
     }
     return nullptr;
@@ -858,6 +949,9 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
                         tlMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
                         tlMsg.timestamp = eventMsg.timestamp;
                         tlMsg.status = eventMsg.eventData ? *(static_cast<TrafficLightStatus*>(eventMsg.eventData)) : LIGHT_GREEN;
+                         // Update matrix clock before sending
+                        leader->matrixClock_.onSend();
+                        tlMsg.matrixClock = leader->matrixClock_;                       
                         sentBytes = sendto(leader->serverSocket_, &tlMsg, sizeof(tlMsg), 0,
                                            (const struct sockaddr*)&dest, sizeof(dest));
                         break;
@@ -867,6 +961,9 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
                         gsMsg.type = MessageType::GAS_STATION_ALERT;
                         gsMsg.vehicleId = leader->info_.id;
                         gsMsg.timestamp = eventMsg.timestamp;
+                        // Update matrix clock before sending
+                        leader->matrixClock_.onSend();
+                        gsMsg.matrixClock = leader->matrixClock_;                        
                         sentBytes = sendto(leader->serverSocket_, &gsMsg, sizeof(gsMsg), 0,
                                            (const struct sockaddr*)&dest, sizeof(dest));
                         break;
@@ -876,6 +973,9 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
                         obsMsg.type = MessageType::OBSTACLE_DETECTED_ALERT;
                         obsMsg.timestamp = eventMsg.timestamp;
                         obsMsg.obstacleDetected = eventMsg.eventData ? *(static_cast<bool*>(eventMsg.eventData)) : false;
+                        // Update matrix clock before sending
+                        leader->matrixClock_.onSend();
+                        obsMsg.matrixClock = leader->matrixClock_;
                         sentBytes = sendto(leader->serverSocket_, &obsMsg, sizeof(obsMsg), 0,
                                            (const struct sockaddr*)&dest, sizeof(dest));
                         break;
@@ -885,7 +985,10 @@ void* LeadingVehicle::eventSenderThreadEntry(void* arg) {
                         LeavePlatoonMessage leaveMsg{};
                         leaveMsg.type = MessageType::LEAVE_PLATOON;
                         leaveMsg.vehicleId = leader->info_.id;
-                        leaveMsg.timestamp = eventMsg.timestamp;
+                        leaveMsg.timestamp = eventMsg.timestamp;                        
+                        // Update matrix clock before sending
+                        leader->matrixClock_.onSend();
+                        leaveMsg.matrixClock = leader->matrixClock_;
                         sentBytes = sendto(leader->serverSocket_, &leaveMsg, sizeof(leaveMsg), 0,
                                            (const struct sockaddr*)&dest, sizeof(dest));
                         
@@ -1113,6 +1216,12 @@ int main(int argc, char** argv) {
     double baseSpeed = LEADER_INITIAL_SPEED;
     double initialPos = LEADER_INITIAL_POSITION;
 
+#ifdef ENABLE_WCET
+    // Register signal handler
+    std::signal(SIGINT, signalHandler);
+    std::cout << "[WCET] Measurement ENABLED (compiled with -DENABLE_WCET)\n";
+#endif
+
     try {
         // Create FIFO
         unlink(EVENT_FIFO);
@@ -1142,6 +1251,19 @@ int main(int argc, char** argv) {
         while (true) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
+
+#ifdef ENABLE_WCET
+        // Explicitly stop server/threads before stats print
+        leader.stopServer();
+        
+        std::cout << "\n\033[1;33m========== WCET MEASUREMENT RESULTS (ON EXIT) ==========\033[0m\n";
+        wcet_run.printStats();
+        wcet_send.printStats();
+        wcet_display.printStats();
+        wcet_heartbeat.printStats();
+        std::cout << "\033[1;33m=======================================================\033[0m\n";
+#endif
+
     } catch (const std::exception& ex) {
         std::cerr << "Leader error: " << ex.what() << std::endl;
         return 1;
