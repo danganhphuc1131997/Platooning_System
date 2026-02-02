@@ -41,6 +41,9 @@ FollowingVehicle::FollowingVehicle(int id,
     info_.position = initialPosition;
     info_.speed = std::round(initialSpeed);
     info_.mode = FollowerMode;
+    
+    // Initialize matrix clock
+    matrixClock_.init(id, MAX_PLATOON_VEHICLES);
 
     // Initialize front/rear vehicle info as invalid (id = -1 means unknown)
     frontVehicleInfo_.id = -1;
@@ -125,6 +128,10 @@ void FollowingVehicle::sendCoupleCommandToLeader(bool couple) {
     cmd.info.port = info_.port;
     cmd.couple = couple;
     cmd.timestamp = nowMs();
+    
+    // Update matrix clock before sending
+    matrixClock_.onSend();
+    cmd.matrixClock = matrixClock_;
 
     ssize_t sentBytes = sendto(clientSocket_, &cmd, sizeof(cmd), 0,
                                (const struct sockaddr*)&leaderAddr_, sizeof(leaderAddr_));
@@ -191,6 +198,9 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     StatusUpdateMessage status;
                     std::memcpy(&status, buffer, sizeof(status));
 
+                    // Merge matrix clock from received message
+                    follower->matrixClock_.onReceive(status.matrixClock);
+
                     pthread_mutex_lock(&follower->leaderMutex_);
                     // Always update leader info if this is from the leader
                     if (status.info.mode == LeaderMode) {
@@ -209,6 +219,10 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     if (static_cast<size_t>(recvLen) < sizeof(TrafficLightMessage)) break;
                     TrafficLightMessage trafficMsg;
                     std::memcpy(&trafficMsg, buffer, sizeof(trafficMsg));
+                    
+                    // Merge matrix clock from received message
+                    follower->matrixClock_.onReceive(trafficMsg.matrixClock);
+              
                     TrafficLightStatus alert = static_cast<TrafficLightStatus>(trafficMsg.status);
                     std::cout << "Received traffic light alert: "
                               << (alert == LIGHT_RED ? "RED" : "GREEN") << std::endl;
@@ -285,6 +299,10 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     if (static_cast<size_t>(recvLen) < sizeof(EnergyDepletionMessage)) break;
                     EnergyDepletionMessage energyMsg;
                     std::memcpy(&energyMsg, buffer, sizeof(energyMsg));
+                    
+                    // Merge matrix clock from received message
+                    follower->matrixClock_.onReceive(energyMsg.matrixClock);
+    
                     std::cout << "Received energy depletion alert from vehicle " << energyMsg.vehicleId << std::endl;
 
                     // If it's from the front vehicle, perhaps adjust behavior, but for now just log
@@ -307,6 +325,9 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     if (static_cast<size_t>(recvLen) < sizeof(PlatoonStateMessage)) break;
                     PlatoonStateMessage psMsg;
                     std::memcpy(&psMsg, buffer, sizeof(psMsg));
+                    
+                    // Merge matrix clock from received message
+                    follower->matrixClock_.onReceive(psMsg.matrixClock);
 
                     // DEBUG RECV
                     /* 
@@ -376,6 +397,10 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                     if (static_cast<size_t>(recvLen) < sizeof(ObstacleMessage)) break;
                     ObstacleMessage obsMsg;
                     std::memcpy(&obsMsg, buffer, sizeof(obsMsg));
+                                        
+                    // Merge matrix clock from received message
+                    follower->matrixClock_.onReceive(obsMsg.matrixClock);
+     
                     bool detected = obsMsg.obstacleDetected;
                     std::cout << "Received obstacle detected alert: "
                               << (detected ? "DETECTED" : "CLEARED") << std::endl;
@@ -404,11 +429,13 @@ void* FollowingVehicle::recvThreadEntry(void* arg) {
                         }
                     break;
                 case REMOVE_VEHICLE: {
-                    if (static_cast<size_t>(recvLen) < sizeof(RemoveVehicleMessage)) break;
-                    
-                    RemoveVehicleMessage removeMsg;
+                    if (static_cast<size_t>(recvLen) < sizeof(RemoveVehicleMessage)) break;                   
+                    RemoveVehicleMessage removeMsg;                                 
                     std::memcpy(&removeMsg, buffer, sizeof(removeMsg));
-                    
+
+                    // Merge matrix clock from received message
+                    follower->matrixClock_.onReceive(removeMsg.matrixClock);
+                        
                     if (removeMsg.vehicleId == follower->info_.id) {
                         std::cout << COLOR_YELLOW << "[FOLLOWER " << follower->info_.id << "] Received remove notification. Waiting for maintenance.\n" << COLOR_RESET;
                         
@@ -772,6 +799,10 @@ void* FollowingVehicle::sendStatusThreadEntry(void* arg) {
         status.info = follower->info_;
         status.timestamp = now;
 
+        // Update matrix clock on send
+        follower->matrixClock_.onSend();
+        status.matrixClock = follower->matrixClock_;
+
         // Send to leader (using sendto since socket is not connected)
         ssize_t sentBytes = sendto(follower->clientSocket_, &status, sizeof(status), 0,
                                    (const struct sockaddr*)&follower->leaderAddr_, sizeof(follower->leaderAddr_));
@@ -851,6 +882,32 @@ void* FollowingVehicle::displayThreadEntry(void* arg) {
                   << " (pos=" << refPos << ", spd=" << (frontId == -1 || frontMode == LeaderMode ? leaderSp : frontSp) << ")\n";
         std::cout << "Rear vehicle: " << (rearId == -1 ? "None" : ("ID " + std::to_string(rearId))) << "\n";
         std::cout << std::flush;
+        
+        // Display full matrix clock (what this follower knows about all processes' views)
+        std::cout << "Matrix Clock:\n";
+        
+        // Make a copy of vehicles under lock
+        std::vector<VehicleInfo> vehiclesCopy;
+        pthread_mutex_lock(&follower->leaderMutex_);
+        vehiclesCopy = follower->platoonState_.vehicles;
+        pthread_mutex_unlock(&follower->leaderMutex_);
+
+        if (vehiclesCopy.empty()) {
+             std::cout << "  (Waiting for platoon state...)\n";
+        } else {
+            for (const auto& vi : vehiclesCopy) {
+                std::cout << "  P" << vi.id << ": [";
+                bool first = true;
+                for (const auto& vj : vehiclesCopy) {
+                    if (!first) std::cout << ", ";
+                    // Note: accessing matrixClock_ without lock here is still technically racy 
+                    // if recv thread is updating it, but good enough for display.
+                    std::cout << follower->matrixClock_.matrix[vi.id][vj.id];
+                    first = false;
+                }
+                std::cout << "]\n";
+            }
+        }
     }
     return nullptr;
 }
@@ -973,6 +1030,9 @@ void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
                     tlMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
                     tlMsg.timestamp = eventMsg.timestamp;
                     tlMsg.status = (TrafficLightStatus)(uintptr_t)eventMsg.eventData;
+                    // Update matrix clock before sending
+                    follower->matrixClock_.onSend();
+                    tlMsg.matrixClock = follower->matrixClock_;
                     sentBytes = sendto(follower->clientSocket_, &tlMsg, sizeof(tlMsg), 0,
                                        (const struct sockaddr*)&frontAddr, sizeof(frontAddr));
                     break;
@@ -982,6 +1042,9 @@ void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
                     energyMsg.type = MessageType::ENERGY_DEPLETION_ALERT;
                     energyMsg.vehicleId = follower->info_.id;
                     energyMsg.timestamp = eventMsg.timestamp;
+                    // Update matrix clock before sending
+                    follower->matrixClock_.onSend();
+                    energyMsg.matrixClock = follower->matrixClock_;
                     sentBytes = sendto(follower->clientSocket_, &energyMsg, sizeof(energyMsg), 0,
                                        (const struct sockaddr*)&frontAddr, sizeof(frontAddr));
                     break;
@@ -1009,6 +1072,9 @@ void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
                     tlMsg.type = MessageType::TRAFFIC_LIGHT_ALERT;
                     tlMsg.timestamp = eventMsg.timestamp;
                     tlMsg.status = (TrafficLightStatus)(uintptr_t)eventMsg.eventData;
+                    // Update matrix clock before sending
+                    follower->matrixClock_.onSend();
+                    tlMsg.matrixClock = follower->matrixClock_;
                     sentBytes = sendto(follower->clientSocket_, &tlMsg, sizeof(tlMsg), 0,
                                        (const struct sockaddr*)&rearAddr, sizeof(rearAddr));
                     break;
@@ -1018,6 +1084,9 @@ void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
                     energyMsg.type = MessageType::ENERGY_DEPLETION_ALERT;
                     energyMsg.vehicleId = follower->info_.id;
                     energyMsg.timestamp = eventMsg.timestamp;
+                    // Update matrix clock before sending
+                    follower->matrixClock_.onSend();
+                    energyMsg.matrixClock = follower->matrixClock_;
                     sentBytes = sendto(follower->clientSocket_, &energyMsg, sizeof(energyMsg), 0,
                                        (const struct sockaddr*)&rearAddr, sizeof(rearAddr));
                     break;
@@ -1037,6 +1106,11 @@ void* FollowingVehicle::eventSenderThreadEntry(void* arg) {
             energyMsg.type = MessageType::ENERGY_DEPLETION_ALERT;
             energyMsg.vehicleId = follower->info_.id;
             energyMsg.timestamp = eventMsg.timestamp;
+
+            // Update matrix clock before sending
+            follower->matrixClock_.onSend();
+            energyMsg.matrixClock = follower->matrixClock_;
+
             ssize_t sentBytes = sendto(follower->clientSocket_, &energyMsg, sizeof(energyMsg), 0,
                                        (const struct sockaddr*)&follower->leaderAddr_, sizeof(follower->leaderAddr_));
             if (sentBytes < 0) {
