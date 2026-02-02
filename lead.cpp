@@ -826,12 +826,11 @@ void* LeadingVehicle::heartbeatThreadEntry(void* arg) {
         pthread_mutex_unlock(&leader->mutex_);
 
         if (!toRemove.empty()) leader->sendPlatoonState();
-    }
 
 #ifdef ENABLE_WCET
         wcet_heartbeat.stop();
 #endif 
-
+    }
     return nullptr;
 }
 
@@ -1146,6 +1145,14 @@ void LeadingVehicle::updateSimulatedLidar() {
 }
 
 bool LeadingVehicle::scanEnvironmentWithGPU() {
+#ifdef ENABLE_WCET
+    // CPU Fallback for WCET (prevents crash if OpenCL failed)
+    float threshold = (float)SAFETY_DIST;
+    for (float dist : lidar_data_) {
+        if (dist < threshold) return true;
+    }
+    return false;
+#else
     cl_int ret;
 
     // 1. Copy latest Lidar data from RAM to VRAM
@@ -1175,6 +1182,7 @@ bool LeadingVehicle::scanEnvironmentWithGPU() {
         if (risk == 1) return true; // Obstacle detected!
     }
     return false;
+#endif
 }
 
 // Program start entry
@@ -1249,7 +1257,10 @@ int main(int argc, char** argv) {
         leader.startServer();
         leader.startThreads(); // Ensure event handling thread is started here
         while (true) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+#ifdef ENABLE_WCET
+            if (!keepRunning) break;
+#endif
         }
 
 #ifdef ENABLE_WCET
@@ -1262,6 +1273,7 @@ int main(int argc, char** argv) {
         wcet_display.printStats();
         wcet_heartbeat.printStats();
         std::cout << "\033[1;33m=======================================================\033[0m\n";
+        exit(0);
 #endif
 
     } catch (const std::exception& ex) {

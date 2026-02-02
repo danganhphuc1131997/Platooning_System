@@ -12,7 +12,6 @@
 #include "vehicle.h"
 #include "system_config.h"
 #include "matrix_clock.h"
-#include "matrix_clock.h"
 // Message types
 enum MessageType : std::uint8_t {
     STATUS_UPDATE = 0,   // Vehicle status update
@@ -52,6 +51,7 @@ struct ObstacleMessage {
     bool obstacleDetected;  // true if obstacle detected
     std::int64_t timestamp; // Timestamp of the event
     MatrixClock matrixClock;                  // Logical matrix clock
+};
 
 struct EventMessage {
     MessageType type;       // Message type
